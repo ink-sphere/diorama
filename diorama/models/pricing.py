@@ -1,10 +1,10 @@
-"""OpenRouter dynamic pricing — fetch, cache, and compute per-token-type cost.
+"""OpenRouter dynamic pricing: fetch, cache, and compute per-token-type cost.
 
 OpenRouter exposes live per-model pricing at `/api/v1/models` (USD per token for
 `prompt`/`completion`, per request for `request`, plus cache read/write and
 reasoning rates). litellm's static `cost_per_token` often can't price an
 `openrouter/<vendor>/<model>` id and ignores the cheaper cache-read / pricier
-cache-write rates — so we fetch the live table ourselves and price each token
+cache-write rates, so we fetch the live table ourselves and price each token
 type at its own rate.
 
 The table is fetched once and cached to disk with a TTL (default 24h), so normal
@@ -170,7 +170,7 @@ class PricingTable:
     def warm(self, model_ids: list[str] | None = None, *, force: bool = False) -> bool:
         """Ensure the table is loaded: fresh disk cache, else fetch from OpenRouter.
 
-        Returns True if any pricing is available afterward. Best-effort — never
+        Returns True if any pricing is available afterward. Best-effort, never
         raises. `model_ids` is advisory (used only for a debug log).
         """
         if self._loaded and not force:
@@ -203,7 +203,7 @@ class PricingTable:
                 if isinstance(p, dict)
             }
             return bool(self._models)
-        except Exception:  # noqa: BLE001 — corrupt cache → treat as missing
+        except Exception:  # noqa: BLE001
             logger.warning("Could not read pricing cache", exc_info=True)
             return False
 
@@ -223,7 +223,7 @@ class PricingTable:
             resp = httpx.get(_MODELS_URL, timeout=_FETCH_TIMEOUT)
             resp.raise_for_status()
             raw = resp.json().get("data") or []
-        except Exception:  # noqa: BLE001 — offline / API down → fall back to litellm
+        except Exception:  # noqa: BLE001
             logger.warning("Could not fetch OpenRouter pricing", exc_info=True)
             return False
 
@@ -246,6 +246,6 @@ class PricingTable:
                 json.dumps({"fetched_at": time.time(), "models": models_raw}),
                 encoding="utf-8",
             )
-        except Exception:  # noqa: BLE001 — caching is optional
+        except Exception:  # noqa: BLE001
             logger.warning("Could not write pricing cache", exc_info=True)
         return True
