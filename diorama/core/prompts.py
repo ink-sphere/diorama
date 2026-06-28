@@ -1,7 +1,7 @@
 """System prompt(s) for the diorama ReAct agent.
 
 Deliberately generic: a basic ReAct (Reason + Act) agent prompt. The core
-termination contract is faithful to coursify's loop — a turn ends when the model
+termination contract ensures a turn ends when the model
 replies with **no tool call**, so the prompt tells the model exactly that.
 """
 

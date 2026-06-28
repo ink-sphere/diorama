@@ -1,10 +1,10 @@
 """A basic ReAct agent over diorama's :class:`LiteLLMModel`.
 
-This is the trimmed-down sibling of coursify's actor-based agent: a single
+This is the trimmed-down sibling of diorama's actor-based agent: a single
 ``await agent.run(prompt)`` drives one native tool-calling loop. Per turn the agent
 calls the model with the registered tool schemas (``tool_choice="auto"``), executes
 any tool calls, feeds the results back, and repeats. **A turn ends when the model
-replies with no tool calls** (faithful to coursify's loop) — ``final_answer`` is an
+replies with no tool calls** (faithful to diorama's loop) — ``final_answer`` is an
 optional convenience tool, not a requirement.
 
 Production features kept (per the basic-agent brief):
@@ -52,9 +52,6 @@ class ReactAgentResult(BaseModel):
     cost_usd: float
 
 
-# --------------------------------------------------------------------------- #
-# Error classification + retry policy (mirrors coursify/core/llm.py)
-# --------------------------------------------------------------------------- #
 def _is_rate_limit_error(error: Exception) -> bool:
     """Return True when the error looks like an API rate-limit response."""
     s = str(error).lower()

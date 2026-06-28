@@ -1,4 +1,4 @@
-"""Tool registry + dispatcher (adapted from coursify's ``ToolRouter``).
+"""Tool registry + dispatcher (adapted from diorama's ``ToolRouter``).
 
 Holds the available tools, exports their OpenAI schemas for the LLM, and routes a
 parsed tool call to the right ``async forward``. It introspects each tool's

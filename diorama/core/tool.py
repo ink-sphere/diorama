@@ -1,8 +1,8 @@
-"""Tool base classes for the diorama ReAct agent (adapted from coursify).
+"""Tool base classes for the diorama ReAct agent (adapted from diorama).
 
 A :class:`Tool` declares its name, description, and parameters, exposes an OpenAI
 function-calling schema via :meth:`to_json_schema`, and implements an **async**
-:meth:`forward`. The one production affordance kept from coursify's tool model is
+:meth:`forward`. The one production affordance kept from diorama's tool model is
 ``requires_approval`` — when True the agent loop pauses for human confirmation
 before executing the tool (unless approval is auto-granted).
 
