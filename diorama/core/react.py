@@ -29,7 +29,9 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
 from pydantic import BaseModel
+
 from diorama.core.prompts import SYSTEM_PROMPT
 from diorama.core.router import ToolRouter
 from diorama.core.tool import Tool
@@ -43,7 +45,9 @@ _RATE_LIMIT_DELAYS = [30, 60]
 
 
 class ReactAgentResult(BaseModel):
-    final_answer: str
+    # ``final_answer`` is None when the loop stops without the model producing a
+    # plain-text answer (e.g. the max-iterations guard fires mid-tool-call).
+    final_answer: str | None = None
     completed: bool
     stop_reason: str
     steps: int
@@ -236,7 +240,7 @@ class ReactAgent:
         stream: bool = False,
         auto_approve: bool | None = None,
         console: Any = None,
-    ) -> dict[str, Any]:
+    ) -> ReactAgentResult:
         """Run one task to completion and return a result dict.
 
         Args:
@@ -249,7 +253,7 @@ class ReactAgent:
                 created when omitted and ``stream`` is True.
 
         Returns:
-            dict[str, Any]: ``final_answer``, ``completed``, ``stop_reason``,
+            ReactAgentResult: ``final_answer``, ``completed``, ``stop_reason``,
                 ``steps``, ``messages``, ``usage`` (cumulative), and ``cost_usd``.
         """
         if stream and console is None:
@@ -298,7 +302,7 @@ class ReactAgent:
             cost_usd=round(self.model.cumulative.get("cost_usd", 0.0), 6),
         )
 
-    def run_sync(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
+    def run_sync(self, prompt: str, **kwargs: Any) -> ReactAgentResult:
         """Blocking convenience wrapper around :meth:`run`."""
         return asyncio.run(self.run(prompt, **kwargs))
 

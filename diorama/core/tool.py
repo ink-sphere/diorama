@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import weave
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 ToolType = Literal["string", "number", "boolean", "object", "array", "any"]
 
@@ -57,6 +57,11 @@ class Tool(BaseModel):
             auto-generated parameters schema in :meth:`to_json_schema`. Useful for
             tools with complex nested schemas. Defaults to None.
     """
+
+    # ``arbitrary_types_allowed`` lets stateful tools hold a reference to a
+    # plain (non-pydantic) object — e.g. an ``EbookContext`` shared across a
+    # book-bound tool set — without pydantic attempting to validate/copy it.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     tool_name: str
     description: str
