@@ -32,6 +32,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
+from diorama.core.callback import Callback, Event, RichLoggingCallback
 from diorama.core.prompts import SYSTEM_PROMPT
 from diorama.core.router import ToolRouter
 from diorama.core.tool import Tool
@@ -182,6 +183,7 @@ class ReactAgent:
         enable_prompt_caching: bool = True,
         approval_callback: Callable[[str, dict], bool] | None = None,
         weave_project: str | None = None,
+        callbacks: list[Callback] | None = None,
     ) -> None:
         """Initialise the agent with its tool set and configuration.
 
@@ -201,6 +203,8 @@ class ReactAgent:
                 ``(tool_name, arguments) -> bool`` to resolve approval when a tool
                 requires it and auto-approval is off.
             weave_project (str | None): When set, initialise W&B Weave tracing.
+            callbacks (list[Callback] | None): Optional callbacks to observe agent
+                execution events. Defaults to None.
         """
         self.model = model or LiteLLMModel(
             model_id=model_id,
@@ -216,6 +220,7 @@ class ReactAgent:
         self.max_iterations = max_iterations
         self.yolo_mode = yolo_mode
         self.approval_callback = approval_callback
+        self.callbacks: list[Callback] = callbacks or []
         self._maybe_init_weave(weave_project)
 
     @staticmethod
@@ -229,6 +234,20 @@ class ReactAgent:
             weave.init(weave_project)
         except Exception as e:  # noqa: BLE001
             logger.warning("weave.init failed (continuing without tracing): %s", e)
+
+    def _emit(self, event_type: str, data: dict[str, Any] | None = None) -> None:
+        """Emit an event to all registered callbacks.
+
+        Args:
+            event_type (str): The event type identifier.
+            data (dict[str, Any] | None): Optional event payload. Defaults to {}.
+        """
+        event = Event(event_type, data or {})
+        for callback in self.callbacks:
+            try:
+                callback.on_event(event)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Callback error on %s: %s", event_type, e)
 
     # ----------------------------------------------------------------------- #
     # Public API
@@ -261,35 +280,82 @@ class ReactAgent:
 
             console = Console()
 
+        # Auto-add RichLoggingCallback if stream=True and no callbacks registered
+        if stream and not self.callbacks:
+            self.callbacks = [RichLoggingCallback(console=console)]
+
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": prompt},
         ]
         tool_specs = self.tool_router.get_tool_specs_for_llm() or None
 
+        # Emit ready event
+        self._emit("ready", {"tool_count": len(self.tools)})
+
         final_answer: str | None = None
         completed = False
         stop_reason = "max_iterations"
         iteration = 0
 
-        while self.max_iterations == -1 or iteration < self.max_iterations:
-            iteration += 1
-            result = await self._call_llm(messages, tool_specs, stream, console)
-            tool_calls = [
-                result.tool_calls_acc[idx] for idx in sorted(result.tool_calls_acc)
-            ]
-            messages.append(_assistant_message(result.content, tool_calls or None))
-            if stream and console is not None and result.content:
-                console.print()  # end the streamed assistant line
+        try:
+            while self.max_iterations == -1 or iteration < self.max_iterations:
+                iteration += 1
 
-            if not tool_calls:
-                final_answer = result.content
-                completed = True
-                stop_reason = "completed"
-                break
+                # Emit processing event
+                self._emit("processing", {"iteration": iteration})
 
-            await self._run_tool_calls(
-                tool_calls, messages, auto_approve, stream, console
+                result = await self._call_llm(messages, tool_specs, stream, console)
+                tool_calls = [
+                    result.tool_calls_acc[idx] for idx in sorted(result.tool_calls_acc)
+                ]
+                messages.append(_assistant_message(result.content, tool_calls or None))
+
+                # Emit assistant_message event
+                self._emit(
+                    "assistant_message",
+                    {
+                        "content": result.content,
+                        "finish_reason": result.finish_reason,
+                    },
+                )
+
+                if stream and console is not None and result.content:
+                    console.print()  # end the streamed assistant line
+
+                if not tool_calls:
+                    final_answer = result.content
+                    completed = True
+                    stop_reason = "completed"
+                    break
+
+                await self._run_tool_calls(
+                    tool_calls, messages, auto_approve, stream, console
+                )
+
+        except Exception as e:
+            self._emit(
+                "error",
+                {
+                    "error_type": "agent_loop",
+                    "error": str(e),
+                    "iteration": iteration,
+                },
+            )
+            raise
+
+        finally:
+            # Emit turn_complete event
+            self._emit(
+                "turn_complete",
+                {
+                    "final_answer": final_answer,
+                    "completed": completed,
+                    "stop_reason": stop_reason,
+                    "iterations": iteration,
+                    "usage": dict(self.model.cumulative),
+                    "cost_usd": round(self.model.cumulative.get("cost_usd", 0.0), 6),
+                },
             )
 
         return ReactAgentResult(
@@ -326,7 +392,15 @@ class ReactAgent:
                 args = json.loads(raw_args) if raw_args.strip() else {}
                 if not isinstance(args, dict):
                     raise ValueError("arguments must be a JSON object")
-            except (json.JSONDecodeError, ValueError, TypeError):
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
+                self._emit(
+                    "error",
+                    {
+                        "error_type": "parsing",
+                        "error": f"Failed to parse arguments for '{name}': {e}",
+                        "tool_name": name,
+                    },
+                )
                 messages.append(
                     _tool_message(
                         f"ERROR: arguments for '{name}' were not a valid JSON object.",
@@ -342,6 +416,15 @@ class ReactAgent:
                 and tool.requires_approval
                 and not self._approve(name, args, auto_approve, console)
             ):
+                # Emit approval_required event
+                self._emit(
+                    "approval_required",
+                    {
+                        "tool_name": name,
+                        "tool_call_id": tc_id,
+                        "arguments": args,
+                    },
+                )
                 messages.append(
                     _tool_message(
                         f"Tool '{name}' was not approved by the user; it was skipped.",
@@ -351,11 +434,45 @@ class ReactAgent:
                 )
                 continue
 
-            if stream and console is not None:
-                console.print(f"[dim]→ {name}({_short(args)})[/dim]")
-            output, success = await self.tool_router.call_tool(
-                name, args, tool_call_id=tc_id
+            # Emit tool_call event
+            self._emit(
+                "tool_call",
+                {
+                    "tool_name": name,
+                    "tool_call_id": tc_id,
+                    "arguments": args,
+                },
             )
+
+            try:
+                if stream and console is not None:
+                    console.print(f"[dim]→ {name}({_short(args)})[/dim]")
+                output, success = await self.tool_router.call_tool(
+                    name, args, tool_call_id=tc_id
+                )
+            except Exception as e:
+                self._emit(
+                    "error",
+                    {
+                        "error_type": "tool_execution",
+                        "error": str(e),
+                        "tool_name": name,
+                    },
+                )
+                success = False
+                output = str(e)
+
+            # Emit tool_output event
+            self._emit(
+                "tool_output",
+                {
+                    "tool_name": name,
+                    "tool_call_id": tc_id,
+                    "output": output,
+                    "success": success,
+                },
+            )
+
             messages.append(_tool_message(output, tc_id, name))
             if stream and console is not None:
                 tag = "ok" if success else "error"
@@ -408,10 +525,20 @@ class ReactAgent:
         self, messages: list[dict], tools: list[dict] | None, stream: bool, console: Any
     ) -> LLMResult:
         """Call the model (with transient-error retries) and normalise the response."""
-        response = await self._acompletion_with_retry(messages, tools, stream)
-        if stream:
-            return self._record(await self._consume_stream(response, console))
-        return self._record(self._parse_response(response))
+        try:
+            response = await self._acompletion_with_retry(messages, tools, stream)
+            if stream:
+                return self._record(await self._consume_stream(response, console))
+            return self._record(self._parse_response(response))
+        except Exception as e:
+            self._emit(
+                "error",
+                {
+                    "error_type": "llm_call",
+                    "error": str(e),
+                },
+            )
+            raise
 
     def _record(self, pair: tuple[LLMResult, Any]) -> LLMResult:
         """Fold a call's raw usage into the model's cumulative totals."""
@@ -468,12 +595,14 @@ class ReactAgent:
         result = LLMResult(content, tool_calls_acc, finish_reason)
         return result, getattr(response, "usage", None)
 
-    @staticmethod
-    async def _consume_stream(response: Any, console: Any) -> tuple[LLMResult, Any]:
+    async def _consume_stream(
+        self, response: Any, console: Any
+    ) -> tuple[LLMResult, Any]:
         """Drain a streaming response, accumulating content + tool calls.
 
-        Prints assistant text deltas to ``console`` as they arrive. Returns the
-        normalised result paired with the final usage object (if the provider sent one).
+        Prints assistant text deltas to ``console`` as they arrive. Emits
+        ``assistant_chunk`` events for each token. Returns the normalised result
+        paired with the final usage object (if the provider sent one).
         """
         full_content = ""
         tool_calls_acc: dict[int, dict] = {}
@@ -491,6 +620,8 @@ class ReactAgent:
                 finish_reason = choice.finish_reason
             if getattr(delta, "content", None):
                 full_content += delta.content
+                # Emit assistant_chunk event
+                self._emit("assistant_chunk", {"content": delta.content})
                 if console is not None:
                     console.print(delta.content, end="", markup=False, highlight=False)
             if getattr(delta, "tool_calls", None):
@@ -512,6 +643,9 @@ class ReactAgent:
                             slot["function"]["arguments"] += tc_delta.function.arguments
             if getattr(chunk, "usage", None):
                 final_usage = chunk.usage
+
+        # Emit assistant_stream_end event
+        self._emit("assistant_stream_end", {})
 
         result = LLMResult(full_content or None, tool_calls_acc, finish_reason)
         return result, final_usage

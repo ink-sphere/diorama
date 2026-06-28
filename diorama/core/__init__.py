@@ -1,6 +1,7 @@
 """Diorama agents: a basic ReAct agent and its tool framework."""
 
 from diorama.core.answer import FinalAnswerTool
+from diorama.core.callback import Callback, Event, RichLoggingCallback
 from diorama.core.demo_tools import CalculatorTool, CurrentTimeTool
 from diorama.core.prompts import SYSTEM_PROMPT
 from diorama.core.react import LLMResult, ReactAgent
@@ -13,6 +14,9 @@ __all__ = [
     "Tool",
     "ToolParameter",
     "ToolRouter",
+    "Callback",
+    "Event",
+    "RichLoggingCallback",
     "FinalAnswerTool",
     "CalculatorTool",
     "CurrentTimeTool",

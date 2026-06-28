@@ -47,8 +47,14 @@ The project is organized into three main layers:
 - **react.py** — `ReactAgent` base class
   - Native tool-calling loop with iterative refinement
   - Configurable max-iteration guard, LLM retries with backoff, per-tool approval gates
-  - Optional streaming via Rich console output
+  - Event-driven callback system for observing execution (ready, processing, assistant messages, tool calls/outputs, errors, turn completion)
+  - Optional streaming via Rich console output (backward compatible)
   - Returns `ReactAgentResult` with `final_answer` and tool call history
+- **callback.py** — Event callbacks and logging
+  - `Event` dataclass with event_type, data payload, and sequence number
+  - `Callback` base class for observer pattern
+  - `RichLoggingCallback` — Built-in Rich console renderer (colors, panels, syntax highlighting)
+  - Events are emitted synchronously; callbacks can instrument runs without modifying agent logic
 - **tool.py** — `Tool` and `ToolParameter` base classes for extensibility
   - Tools are stateless by default; optional stateful context via `ConfigDict` references
 - **router.py** — `ToolRouter` for dynamic tool dispatch
@@ -195,12 +201,16 @@ Located in `pyproject.toml`:
 
 ## Project State & Considerations
 
-- **Agent Framework:** ReAct agent infrastructure complete with tool routing, approval gates, and streaming
+- **Agent Framework:** ReAct agent infrastructure complete with tool routing, approval gates, event-driven callbacks, and streaming
+  - Callback system for observing/instrumenting agent execution (modeled on Coursify)
+  - Built-in `RichLoggingCallback` for terminal rendering
+  - Full event stream: ready, processing, assistant messages, tool calls/outputs, errors, turn completion
+  - Backward compatible with existing `stream=True` parameter
 - **Ebook Extraction:** EbookLoaderAgent fully implemented; tested on classic literature (Shakespeare, Alice in Wonderland)
-- **Tests:** Comprehensive test suites for both `ReactAgent` (`tests/test_react_agent.py`) and `EbookLoaderAgent` (`tests/test_ebook_loader.py`)
+- **Tests:** Comprehensive test suites for both `ReactAgent` (`tests/test_react_agent.py`), callbacks (`tests/test_callbacks.py`), and `EbookLoaderAgent` (`tests/test_ebook_loader.py`)
 - **Database:** AsyncPG + Alembic ready but no migrations or endpoints defined yet
 - **API:** FastAPI + Uvicorn framework in place; no REST endpoints yet
-- **Early Stage:** v0.0.1 with LLM infrastructure and EPUB extraction complete; remaining work is world model extraction and API endpoints
+- **Early Stage:** v0.0.1 with LLM infrastructure, EPUB extraction, and event callbacks complete; remaining work is world model extraction and API endpoints
 
 ## Common Development Patterns
 
@@ -277,6 +287,79 @@ for model, rates in pricing_table.items():
     print(f"{model}: {rates['prompt']} per prompt token")
 ```
 
+### Observing Agent Execution with Callbacks
+
+The ReAct agent emits an event stream that callbacks can observe for logging, monitoring, rendering UI, or custom instrumentation.
+
+**Built-in Rich logging** (replaces `stream=True`):
+
+```python
+from diorama.core import ReactAgent, RichLoggingCallback
+
+agent = ReactAgent(
+    tools=[CalculatorTool()],
+    callbacks=[RichLoggingCallback(truncate=True, max_result_length=500)]
+)
+
+result = await agent.run("What is 42 * 2?")
+# Outputs formatted agent trace with tool calls, results, and final answer
+```
+
+**Custom callback for metrics or logging**:
+
+```python
+from diorama.core import Callback, Event
+
+class MetricsCallback(Callback):
+    def __init__(self):
+        self.tool_calls = 0
+        self.errors = 0
+
+    def _on_tool_call(self, data):
+        self.tool_calls += 1
+
+    def _on_error(self, data):
+        self.errors += 1
+
+    def _on_turn_complete(self, data):
+        print(f"Metrics: {self.tool_calls} tool calls, {self.errors} errors")
+
+agent = ReactAgent(
+    tools=[CalculatorTool()],
+    callbacks=[MetricsCallback()]
+)
+result = await agent.run("What is 42 * 2?")
+```
+
+**Multiple callbacks** (logging + metrics + custom):
+
+```python
+agent = ReactAgent(
+    tools=[CalculatorTool()],
+    callbacks=[
+        RichLoggingCallback(),
+        MetricsCallback(),
+        MyCustomCallback(),
+    ]
+)
+result = await agent.run("Complex task")
+# All callbacks receive all events synchronously
+```
+
+**Event types emitted** (see `docs/react-agent-callbacks.md` for full reference):
+- `ready` — Agent initialized with tool count
+- `processing` — Turn starting
+- `assistant_chunk` — Streaming token (if streaming)
+- `assistant_stream_end` — Stream complete
+- `assistant_message` — Complete message received
+- `tool_call` — Before tool execution
+- `tool_output` — After tool execution
+- `approval_required` — Tool needs approval
+- `error` — Errors (LLM, tool, parsing)
+- `turn_complete` — Turn finished with final answer
+
+Callbacks can implement `_on_<event_type>` methods for specific events, or override `on_event()` for custom logic. Callback exceptions are logged but do not break the agent.
+
 ## Version Control
 
 - **Branch Model:** Feature branches off `main`
@@ -289,14 +372,15 @@ for model, rates in pricing_table.items():
 
 ## Notes for Future Contributors
 
-1. **Agent Extensions:** Subclass `ReactAgent` for domain-specific agents (as `EbookLoaderAgent` does). Override `run()` to customize the loop or wrap the result.
-2. **Tool Registration:** Tools are registered via `ToolRouter` in the agent's `tools` parameter. Tools can be stateful by storing `EbookContext` or similar in `Tool.context` via `ConfigDict`.
-3. **EPUB Structure:** The ebook module handles three steps:
+1. **Agent Extensions:** Subclass `ReactAgent` for domain-specific agents (as `EbookLoaderAgent` does). Override `run()` to customize the loop or wrap the result. Subclass callbacks from `Callback` to observe specific events.
+2. **Callbacks & Events:** The agent emits events for observability (see event types in "Common Development Patterns"). Implement `_on_<event_type>` methods or override `on_event()` for custom behavior. Callbacks are invoked synchronously; keep them non-blocking. Callback exceptions are logged but don't break the agent.
+3. **Tool Registration:** Tools are registered via `ToolRouter` in the agent's `tools` parameter. Tools can be stateful by storing `EbookContext` or similar in `Tool.context` via `ConfigDict`.
+4. **EPUB Structure:** The ebook module handles three steps:
    - **Parse** (deterministic): `EbookContext.parse()` reads EPUB metadata, NCX, and text blocks
    - **Decide** (agent loop): `EbookLoaderAgent.load()` uses an LLM to mark boundaries and classify levels
    - **Build** (deterministic): `build_structure()` fills the final tree with text and validates coverage
-4. **Testing Ebook Agents:** Use real EPUB files in tests (sample books in `/books/` if available). `EbookContext` and agent runs are fully deterministic given the same EPUB + prompt.
-5. **Database Migrations:** If adding new models, use Alembic: `alembic revision --autogenerate -m "description"`
-6. **LLM Costs:** Always track costs via `LiteLLMModel` — the pricing module handles both static (litellm) and dynamic (OpenRouter) rates
-7. **Async First:** All I/O is async; use `await` for database, LLM, and API calls
-8. **Weave Tracing:** LiteLLM calls can be traced via Weave for debugging and cost auditing
+5. **Testing Ebook Agents:** Use real EPUB files in tests (sample books in `/books/` if available). `EbookContext` and agent runs are fully deterministic given the same EPUB + prompt.
+6. **Database Migrations:** If adding new models, use Alembic: `alembic revision --autogenerate -m "description"`
+7. **LLM Costs:** Always track costs via `LiteLLMModel` — the pricing module handles both static (litellm) and dynamic (OpenRouter) rates
+8. **Async First:** All I/O is async; use `await` for database, LLM, and API calls
+9. **Weave Tracing:** LiteLLM calls can be traced via Weave for debugging and cost auditing
