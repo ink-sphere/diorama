@@ -1,3 +1,3 @@
-from diorama.models.litellm_model import LitellmModel
+from diorama.models.litellm_model import LiteLLMModel
 
-__all__ = ["LitellmModel"]
+__all__ = ["LiteLLMModel"]
