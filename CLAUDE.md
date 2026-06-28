@@ -47,14 +47,14 @@ The project is organized into three main layers:
 - **react.py** — `ReactAgent` base class
   - Native tool-calling loop with iterative refinement
   - Configurable max-iteration guard, LLM retries with backoff, per-tool approval gates
-  - Event-driven callback system for observing execution (ready, processing, assistant messages, tool calls/outputs, errors, turn completion)
-  - Optional streaming via Rich console output (backward compatible)
-  - Returns `ReactAgentResult` with `final_answer` and tool call history
-- **callback.py** — Event callbacks and logging
-  - `Event` dataclass with event_type, data payload, and sequence number
-  - `Callback` base class for observer pattern
-  - `RichLoggingCallback` — Built-in Rich console renderer (colors, panels, syntax highlighting)
-  - Events are emitted synchronously; callbacks can instrument runs without modifying agent logic
+  - Returns `ReactAgentResult` typed model:
+    - `final_answer: str | None` — text reply when the loop completes naturally; `None` if max-iterations fires
+    - `completed: bool` — True when loop ended by choice, False on guard/timeout
+    - `stop_reason` — "completed" or "max_iterations"
+    - `messages`, `usage`, `cost_usd` — full conversation history and accounting
+- **callback.py** — Event callbacks (for instrumentation / observability)
+  - `Callback` base class; `Event` dataclass for event payloads
+  - `RichLoggingCallback` — built-in console renderer for agent trace visualization
 - **tool.py** — `Tool` and `ToolParameter` base classes for extensibility
   - Tools are stateless by default; optional stateful context via `ConfigDict` references
 - **router.py** — `ToolRouter` for dynamic tool dispatch
@@ -63,24 +63,28 @@ The project is organized into three main layers:
 - **demo_tools.py** — Example tools (`CalculatorTool`, `CurrentTimeTool`, `FinalAnswerTool`)
 - **prompts.py** — System prompt for the base ReAct agent
 
-### 3. **diorama.ebook** — EPUB Structure Extraction
-- **ebook_loader_agent.py** — `EbookLoaderAgent` subclass of `ReactAgent`
-  - Specializes in hierarchical EPUB structure extraction
-  - Reusable across multiple books (stateful context per `load()` call)
-  - Configurable model and max-iterations; defaults to GPT-4o-mini via OpenRouter
-  - Returns validated `EbookStructure` with coverage metrics
+### 3. **diorama.ebook** — EPUB Structure Extraction (full design in `docs/ebook-loader-agent.md`)
+- **ebook_loader_agent.py** — `EbookLoaderAgent(ReactAgent)` specializes in hierarchical EPUB structure extraction
+  - Single entry point: `await agent.load(epub_path)` returns an `EbookStructure`
+  - Reusable across books (tools re-bound per call, no state pollution)
+  - Configurable model (default: `gpt-4o-mini`); recommend stronger models (`gpt-4o`, `deepseek-v4-flash`) for complex books
+  - Discovers arbitrary-depth hierarchies with semantic level names (e.g., `act` → `scene` for plays, `parva` → `adhyaya` for epics)
+  - Six tools: `get_overview`, `get_toc`, `list_headings`, `read_blocks`, `search_blocks`, `submit_structure`
 - **context.py** — `EbookContext` - deterministic EPUB parser
-  - Reads EPUB metadata, NCX table of contents, text blocks
-  - Anchors ToC entries to text positions for precise boundaries
-  - Validates tree traversal and coverage
+  - `EbookContext.parse(path)` walks the spine, flattens text into numbered blocks (coordinate system for boundaries)
+  - Anchors ToC entries to block ids with fuzzy-title fallback (`thefuzz`)
+  - Generous heading detection (heuristic-based; LLM makes final call)
 - **slicer.py** — Deterministic tree builder and validator
-  - `build_structure()` turns agent decisions into final text-filled tree
-  - `validate_tree()` ensures hierarchy is well-formed
-- **tools.py** — EPUB-specific tools for the agent
-  - `ListTocTool`, `GetBlockTool`, `SubmitStructureTool`, etc.
+  - `validate_tree()` returns human-readable errors for resubmission
+  - Expands `child_pattern` (regex-based repeating levels: e.g., every "SCENE I/II/III", every "अध्याय 1/2/3")
+  - `build_structure()` assigns ranges, slices text, computes coverage
+- **tools.py** — EPUB-specific tools
+  - `get_overview()`, `get_toc()`, `list_headings(start, end, tag_filter)`, `read_blocks(start, end)`, `search_blocks(regex, start, end)`, `submit_structure(nodes)`
+  - Responses capped to fit context window
 - **models.py** — Pydantic data models
-  - `EbookStructure`, `StructureNode`, `Block`, `CoverageReport`, `TocEntry`
-- **prompts.py** — Agent instructions and dynamic prompt rendering
+  - `Block`, `TocEntry`, `StructureNode`, `CoverageReport`, `EbookStructure`
+  - `SUBMIT_SCHEMA` — recursive JSON schema for the agent's output
+- **prompts.py** — System instructions (`EBOOK_LOADER_INSTRUCTIONS`) and `render_load_prompt()` (pre-seeds overview + ToC)
 
 ## Development Commands
 
@@ -144,14 +148,21 @@ pytest -vvs
 
 ### Live Testing with Real EPUBs
 
-The `test.py` script demonstrates the `EbookLoaderAgent` on real EPUB files:
+```python
+import asyncio
+from dotenv import load_dotenv
+from diorama.ebook import EbookLoaderAgent
 
-```bash
-# Ensure OPENROUTER_API_KEY is set in .env
-python test.py /path/to/book.epub
+load_dotenv()
+async def main():
+    agent = EbookLoaderAgent(model_id="openrouter/deepseek/deepseek-v4-flash")
+    structure = await agent.load("books/dracula.epub", stream=True)
+    print(structure.title, structure.level_types, f"${structure.cost_usd:.4f}")
+    
+asyncio.run(main())
 ```
 
-This will extract the EPUB's hierarchical structure and print coverage metrics.
+The `stream=True` flag prints agent reasoning + tool calls in real time. Returns `EbookStructure` with `.root` (tree of `StructureNode`s), `.coverage` (gaps/overlaps), and cost accounting.
 
 ### Documentation
 
@@ -201,16 +212,19 @@ Located in `pyproject.toml`:
 
 ## Project State & Considerations
 
-- **Agent Framework:** ReAct agent infrastructure complete with tool routing, approval gates, event-driven callbacks, and streaming
-  - Callback system for observing/instrumenting agent execution (modeled on Coursify)
-  - Built-in `RichLoggingCallback` for terminal rendering
-  - Full event stream: ready, processing, assistant messages, tool calls/outputs, errors, turn completion
-  - Backward compatible with existing `stream=True` parameter
-- **Ebook Extraction:** EbookLoaderAgent fully implemented; tested on classic literature (Shakespeare, Alice in Wonderland)
-- **Tests:** Comprehensive test suites for both `ReactAgent` (`tests/test_react_agent.py`), callbacks (`tests/test_callbacks.py`), and `EbookLoaderAgent` (`tests/test_ebook_loader.py`)
+- **Agent Framework:** ReAct agent infrastructure complete (native tool-calling loop, retries, approval gates, streaming)
+  - `ReactAgentResult` now correctly types `final_answer: str | None` (None when loop stops before yielding text)
+  - Streaming via `stream=True` prints agent trace to console
+- **Ebook Extraction:** `EbookLoaderAgent` fully implemented, tested on Shakespeare (*As You Like It*), Alice in Wonderland, and Dracula
+  - Discovers dynamic hierarchies (`act`→`scene`, flat `chapter`, `parva`→`adhyaya`, etc.)
+  - Handles pattern-based deep levels (`child_pattern` with regex, 22 scenes discovered in *As You Like It*)
+  - Full coverage validation (no gaps/overlaps) and cost accounting
+  - Live runs: $0.015–0.02 per book via OpenRouter
+- **Tests:** 29 passing (13 ebook-specific, 16 agent/core tests; all green after fixing dict-subscript → attribute access in `ReactAgentResult`)
+- **Documentation:** Design doc at `docs/ebook-loader-agent.md` (full architecture, design decisions, worked examples)
 - **Database:** AsyncPG + Alembic ready but no migrations or endpoints defined yet
 - **API:** FastAPI + Uvicorn framework in place; no REST endpoints yet
-- **Early Stage:** v0.0.1 with LLM infrastructure, EPUB extraction, and event callbacks complete; remaining work is world model extraction and API endpoints
+- **Next:** World model extraction (entity/relationship recognition from narrative text) and API endpoints
 
 ## Common Development Patterns
 
@@ -236,14 +250,18 @@ print(result.tool_calls)  # See the tool-calling history
 from diorama.ebook import EbookLoaderAgent
 
 agent = EbookLoaderAgent(
-    model_id="openrouter/openai/gpt-4o",  # Stronger model for complex books
+    model_id="openrouter/openai/gpt-4o",  # Stronger model for complex/irregular books
     max_iterations=50
 )
 
 structure = await agent.load("/path/to/book.epub")
 print(structure.title)  # Book title
-print(len(structure.root.children))  # Number of top-level chapters
-print(structure.coverage)  # CoverageReport (blocks hit, coverage %)
+print(structure.level_types)  # Discovered level names (e.g., ["act", "scene"])
+print(len(structure.root))  # Number of top-level nodes
+print(structure.coverage.covered)  # True if all blocks assigned exactly once
+print(structure.coverage.total_blocks)  # Total text blocks in the book
+print(f"${structure.cost_usd:.4f}")  # OpenRouter cost
+# structure.root is list[StructureNode]; each has .children, .text, .preamble_text
 ```
 
 ### Parsing EPUB Structure Without LLM
@@ -287,100 +305,123 @@ for model, rates in pricing_table.items():
     print(f"{model}: {rates['prompt']} per prompt token")
 ```
 
-### Observing Agent Execution with Callbacks
+### Streaming Agent Execution
 
-The ReAct agent emits an event stream that callbacks can observe for logging, monitoring, rendering UI, or custom instrumentation.
-
-**Built-in Rich logging** (replaces `stream=True`):
+The `stream=True` flag on `agent.run()` or `agent.load()` prints agent reasoning and tool calls to the console in real time:
 
 ```python
-from diorama.core import ReactAgent, RichLoggingCallback
-
-agent = ReactAgent(
-    tools=[CalculatorTool()],
-    callbacks=[RichLoggingCallback(truncate=True, max_result_length=500)]
-)
-
-result = await agent.run("What is 42 * 2?")
-# Outputs formatted agent trace with tool calls, results, and final answer
+result = await agent.run("complex task", stream=True)
 ```
 
-**Custom callback for metrics or logging**:
-
-```python
-from diorama.core import Callback, Event
-
-class MetricsCallback(Callback):
-    def __init__(self):
-        self.tool_calls = 0
-        self.errors = 0
-
-    def _on_tool_call(self, data):
-        self.tool_calls += 1
-
-    def _on_error(self, data):
-        self.errors += 1
-
-    def _on_turn_complete(self, data):
-        print(f"Metrics: {self.tool_calls} tool calls, {self.errors} errors")
-
-agent = ReactAgent(
-    tools=[CalculatorTool()],
-    callbacks=[MetricsCallback()]
-)
-result = await agent.run("What is 42 * 2?")
-```
-
-**Multiple callbacks** (logging + metrics + custom):
-
-```python
-agent = ReactAgent(
-    tools=[CalculatorTool()],
-    callbacks=[
-        RichLoggingCallback(),
-        MetricsCallback(),
-        MyCustomCallback(),
-    ]
-)
-result = await agent.run("Complex task")
-# All callbacks receive all events synchronously
-```
-
-**Event types emitted** (see `docs/react-agent-callbacks.md` for full reference):
-- `ready` — Agent initialized with tool count
-- `processing` — Turn starting
-- `assistant_chunk` — Streaming token (if streaming)
-- `assistant_stream_end` — Stream complete
-- `assistant_message` — Complete message received
-- `tool_call` — Before tool execution
-- `tool_output` — After tool execution
-- `approval_required` — Tool needs approval
-- `error` — Errors (LLM, tool, parsing)
-- `turn_complete` — Turn finished with final answer
-
-Callbacks can implement `_on_<event_type>` methods for specific events, or override `on_event()` for custom logic. Callback exceptions are logged but do not break the agent.
+Output shows assistant thinking, each tool call with arguments, results, and the final answer. Useful for debugging and understanding agent behavior.
 
 ## Version Control
 
 - **Branch Model:** Feature branches off `main`
 - **Recent Work (June 28, 2026):**
-  - ReAct agent framework with tool routing and approval gates
-  - EbookLoaderAgent for hierarchical EPUB structure extraction
-  - Deterministic EPUB parser with ToC anchoring
-  - Comprehensive test suites for agent and ebook modules
+  - **Core Agent:** ReAct loop with tool routing, retries (backoff), approval gates; streaming output
+  - **EbookLoaderAgent:** Full hierarchical structure extraction for arbitrary-depth, semantically-named hierarchies
+    - Deterministic EPUB parser (block stream, anchor resolution, fuzzy ToC matching)
+    - Six specialized tools (overview, ToC, heading search, block reading, regex-based pattern search, structure submission)
+    - Validation + error feedback loop for self-correction
+    - Pattern expansion for deep regular structures (e.g., hundreds of scenes/chapters enumerated from one regex rule)
+  - **Tests:** 29 passing (13 ebook-specific, 16 core tests); fixed `ReactAgentResult` type bugs
+  - **Design Doc:** `docs/ebook-loader-agent.md` (architecture, design decisions, worked examples from real books)
+  - **Live Runs:** Shakespeare's *As You Like It* and *Alice in Wonderland* (Act→Scene nesting, 12-chapter flat structure, costs ~$0.015–0.02)
 - **Lock File:** `uv.lock` is committed — always run `uv sync` after pulling
 
 ## Notes for Future Contributors
 
-1. **Agent Extensions:** Subclass `ReactAgent` for domain-specific agents (as `EbookLoaderAgent` does). Override `run()` to customize the loop or wrap the result. Subclass callbacks from `Callback` to observe specific events.
-2. **Callbacks & Events:** The agent emits events for observability (see event types in "Common Development Patterns"). Implement `_on_<event_type>` methods or override `on_event()` for custom behavior. Callbacks are invoked synchronously; keep them non-blocking. Callback exceptions are logged but don't break the agent.
-3. **Tool Registration:** Tools are registered via `ToolRouter` in the agent's `tools` parameter. Tools can be stateful by storing `EbookContext` or similar in `Tool.context` via `ConfigDict`.
-4. **EPUB Structure:** The ebook module handles three steps:
-   - **Parse** (deterministic): `EbookContext.parse()` reads EPUB metadata, NCX, and text blocks
-   - **Decide** (agent loop): `EbookLoaderAgent.load()` uses an LLM to mark boundaries and classify levels
-   - **Build** (deterministic): `build_structure()` fills the final tree with text and validates coverage
-5. **Testing Ebook Agents:** Use real EPUB files in tests (sample books in `/books/` if available). `EbookContext` and agent runs are fully deterministic given the same EPUB + prompt.
-6. **Database Migrations:** If adding new models, use Alembic: `alembic revision --autogenerate -m "description"`
-7. **LLM Costs:** Always track costs via `LiteLLMModel` — the pricing module handles both static (litellm) and dynamic (OpenRouter) rates
-8. **Async First:** All I/O is async; use `await` for database, LLM, and API calls
-9. **Weave Tracing:** LiteLLM calls can be traced via Weave for debugging and cost auditing
+1. **Agent Extensions:** Subclass `ReactAgent` for domain-specific agents (as `EbookLoaderAgent` does). One agent instance can handle multiple tasks by re-binding tools and calling `run()` or `load()` multiple times. Tools can be stateful by holding a context object (e.g., `EbookContext`) via `model_config = ConfigDict(arbitrary_types_allowed=True)`.
+
+2. **EPUB Structure Extraction (3-step pipeline):**
+   - **Parse** (deterministic): `EbookContext.parse(path)` reads spine, flattens to block stream, anchors ToC with fuzzy fallback
+   - **Decide** (agent loop): `EbookLoaderAgent.load(path)` uses LLM + 6 specialized tools to discover boundaries + level names + classification
+   - **Build** (deterministic): `build_structure()` expands patterns, assigns ranges, slices text, validates coverage
+   - **Pattern expansion:** For deep repetitive levels (100+ chapters/scenes/adhyayas), use `child_pattern` with a regex — agent describes the rule once, code enumerates all instances
+   
+3. **Tool Design for Ebook Agents:** Response caps (e.g., `_MAX_HEADINGS = 400`) keep outputs context-window-friendly. Validation errors are returned to the agent for self-correction, not raised as exceptions.
+
+4. **Testing Ebook Code:** 
+   - Pure Python tests (no LLM): `EbookContext` parsing, `slicer` range logic, pattern expansion, validation logic
+   - FakeModel end-to-end: script tool calls to verify the agent loop and tool integration
+   - Real EPUB runs: use `stream=True` to watch reasoning; sample books in `/books/`
+
+5. **Prompt Design for Agents:**
+   - `instructions` parameter appends to `SYSTEM_PROMPT` — use for domain-specific guidance without reimplementing the base loop
+   - Pre-seed the first message with overview data (e.g., `render_load_prompt()`) to save a turn and orient the agent
+   - Use system instructions to teach the agent to use `search_blocks()` / `read_blocks()` to avoid LLM guessing
+
+6. **Database & Migrations:** If adding new models, use Alembic: `alembic revision --autogenerate -m "description"`
+
+7. **LLM Costs:** Always track via `LiteLLMModel` — pricing module handles static (litellm) and dynamic (OpenRouter) rates. `EbookLoaderAgent` wraps cost tracking in the result.
+
+8. **Async:** All I/O is async; use `await` for database, LLM, and API calls. Tests auto-detect async via pytest-asyncio.
+
+9. **Streaming & Observability:** `stream=True` on `run()` / `load()` prints agent trace. For custom instrumentation, extend `Callback` (if event system is active) or call `agent.tool_router.calls` post-run.
+
+## Behavioral guidelines for Agents
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
