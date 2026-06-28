@@ -87,10 +87,10 @@ async def test_single_turn_no_tools_terminates():
     model = FakeModel([_response(content="Hello there.")])
     result = await _agent(model).run("hi")
 
-    assert result["final_answer"] == "Hello there."
-    assert result["completed"] is True
-    assert result["stop_reason"] == "completed"
-    assert result["steps"] == 1
+    assert result.final_answer == "Hello there."
+    assert result.completed is True
+    assert result.stop_reason == "completed"
+    assert result.steps == 1
 
 
 async def test_tool_call_then_final_answer():
@@ -108,10 +108,10 @@ async def test_tool_call_then_final_answer():
         "compute 2+2*3"
     )
 
-    assert result["final_answer"] == "The answer is 8."
-    assert result["steps"] == 2
+    assert result.final_answer == "The answer is 8."
+    assert result.steps == 2
     # The calculator's result was fed back as a role:tool message.
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0]["content"] == "8"
     assert tool_msgs[0]["tool_call_id"] == "c1"
@@ -129,9 +129,7 @@ async def test_assistant_tool_call_message_shape():
     )
     result = await _agent(model, [CalculatorTool()]).run("go")
     assistant_with_tools = [
-        m
-        for m in result["messages"]
-        if m["role"] == "assistant" and m.get("tool_calls")
+        m for m in result.messages if m["role"] == "assistant" and m.get("tool_calls")
     ]
     assert len(assistant_with_tools) == 1
     tc = assistant_with_tools[0]["tool_calls"][0]
@@ -147,9 +145,9 @@ async def test_max_iterations_guard():
     model = FakeModel([looping], loop_last=True)
     result = await _agent(model, [CalculatorTool()], max_iterations=3).run("loop")
 
-    assert result["completed"] is False
-    assert result["stop_reason"] == "max_iterations"
-    assert result["steps"] == 3
+    assert result.completed is False
+    assert result.stop_reason == "max_iterations"
+    assert result.steps == 3
 
 
 async def test_malformed_json_arguments_surface_to_model():
@@ -160,9 +158,9 @@ async def test_malformed_json_arguments_surface_to_model():
         ]
     )
     result = await _agent(model, [CalculatorTool()]).run("go")
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert "valid JSON" in tool_msgs[0]["content"]
-    assert result["final_answer"] == "recovered"
+    assert result.final_answer == "recovered"
 
 
 async def test_usage_and_cost_accumulate():
@@ -176,8 +174,8 @@ async def test_usage_and_cost_accumulate():
     )
     result = await _agent(model, [CalculatorTool()]).run("go")
     # Two LLM calls were recorded.
-    assert result["usage"]["total_tokens"] == 4
-    assert result["cost_usd"] == pytest.approx(0.002)
+    assert result.usage["total_tokens"] == 4
+    assert result.cost_usd == pytest.approx(0.002)
 
 
 # --------------------------------------------------------------------------- #
@@ -207,7 +205,7 @@ async def test_tool_requiring_approval_is_skipped_when_rejected():
         approval_callback=lambda name, args: False,
     )
     result = await agent.run("go")
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert "not approved" in tool_msgs[0]["content"]
 
 
@@ -225,7 +223,7 @@ async def test_tool_requiring_approval_runs_when_approved():
         approval_callback=lambda name, args: True,
     )
     result = await agent.run("go")
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert tool_msgs[0]["content"] == "executed"
 
 
@@ -237,7 +235,7 @@ async def test_yolo_mode_auto_approves():
         ]
     )
     result = await _agent(model, [_ApprovalTool()], yolo_mode=True).run("go")
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert tool_msgs[0]["content"] == "executed"
 
 
@@ -271,8 +269,8 @@ async def test_streaming_accumulates_content():
     model = _StreamModel([])
     result = await _agent(model).run("hi", stream=True, console=console)
 
-    assert result["final_answer"] == "Hello"
-    assert result["completed"] is True
+    assert result.final_answer == "Hello"
+    assert result.completed is True
     assert "Hello" in buffer.getvalue()
 
 

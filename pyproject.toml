@@ -24,6 +24,7 @@ dependencies = [
     "typer>=0.12",
     "litellm>=1.90.0",
     "weave>=0.52.43",
+    "llm-sandbox[docker]>=0.3.39",
 ]
 
 [dependency-groups]
