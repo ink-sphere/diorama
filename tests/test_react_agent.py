@@ -8,7 +8,6 @@ These run entirely against a :class:`FakeModel` that mimics the small slice of
 from __future__ import annotations
 
 import io
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,58 +21,12 @@ from diorama.core import (
     ToolParameter,
     ToolRouter,
 )
-
-
-# --------------------------------------------------------------------------- #
-# Fakes
-# --------------------------------------------------------------------------- #
-def _tool_call(call_id: str, name: str, arguments: str) -> SimpleNamespace:
-    """Build a non-streaming tool-call object shaped like litellm's."""
-    return SimpleNamespace(
-        id=call_id,
-        type="function",
-        function=SimpleNamespace(name=name, arguments=arguments),
-    )
-
-
-def _response(content: str | None = None, tool_calls: list | None = None):
-    """Build a non-streaming litellm-style ``ModelResponse`` stand-in."""
-    message = SimpleNamespace(content=content, tool_calls=tool_calls)
-    finish = "tool_calls" if tool_calls else "stop"
-    choice = SimpleNamespace(message=message, finish_reason=finish)
-    return SimpleNamespace(
-        choices=[choice], usage={"prompt_tokens": 1, "completion_tokens": 1}
-    )
-
-
-class FakeModel:
-    """Drop-in stand-in for ``LiteLLMModel`` driven by a scripted response list.
-
-    Each item in ``responses`` is returned (in order) from successive ``acompletion``
-    calls. If ``loop_last`` is True the final item is reused for any extra calls (handy
-    for exercising the max-iteration guard).
-    """
-
-    def __init__(self, responses: list[Any], *, loop_last: bool = False) -> None:
-        self._responses = list(responses)
-        self._loop_last = loop_last
-        self.calls: list[dict] = []
-        self.cumulative: dict[str, float] = {"cost_usd": 0.0, "total_tokens": 0.0}
-
-    async def acompletion(self, messages, tools=None, stream: bool = False):
-        self.calls.append(
-            {"messages": list(messages), "tools": tools, "stream": stream}
-        )
-        if not self._responses:
-            raise AssertionError("FakeModel ran out of scripted responses")
-        if len(self._responses) == 1 and self._loop_last:
-            return self._responses[0]
-        return self._responses.pop(0)
-
-    def record_usage(self, usage) -> dict:
-        self.cumulative["cost_usd"] += 0.001
-        self.cumulative["total_tokens"] += 2
-        return {"total_tokens": 2, "cost_usd": 0.001}
+from tests.fakes import (
+    FakeModel,
+    StreamModel,
+    response as _response,
+    tool_call as _tool_call,
+)
 
 
 def _agent(model: FakeModel, tools=None, **kwargs) -> ReactAgent:
@@ -87,10 +40,10 @@ async def test_single_turn_no_tools_terminates():
     model = FakeModel([_response(content="Hello there.")])
     result = await _agent(model).run("hi")
 
-    assert result["final_answer"] == "Hello there."
-    assert result["completed"] is True
-    assert result["stop_reason"] == "completed"
-    assert result["steps"] == 1
+    assert result.final_answer == "Hello there."
+    assert result.completed is True
+    assert result.stop_reason == "completed"
+    assert result.steps == 1
 
 
 async def test_tool_call_then_final_answer():
@@ -108,10 +61,10 @@ async def test_tool_call_then_final_answer():
         "compute 2+2*3"
     )
 
-    assert result["final_answer"] == "The answer is 8."
-    assert result["steps"] == 2
+    assert result.final_answer == "The answer is 8."
+    assert result.steps == 2
     # The calculator's result was fed back as a role:tool message.
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0]["content"] == "8"
     assert tool_msgs[0]["tool_call_id"] == "c1"
@@ -129,9 +82,7 @@ async def test_assistant_tool_call_message_shape():
     )
     result = await _agent(model, [CalculatorTool()]).run("go")
     assistant_with_tools = [
-        m
-        for m in result["messages"]
-        if m["role"] == "assistant" and m.get("tool_calls")
+        m for m in result.messages if m["role"] == "assistant" and m.get("tool_calls")
     ]
     assert len(assistant_with_tools) == 1
     tc = assistant_with_tools[0]["tool_calls"][0]
@@ -147,9 +98,9 @@ async def test_max_iterations_guard():
     model = FakeModel([looping], loop_last=True)
     result = await _agent(model, [CalculatorTool()], max_iterations=3).run("loop")
 
-    assert result["completed"] is False
-    assert result["stop_reason"] == "max_iterations"
-    assert result["steps"] == 3
+    assert result.completed is False
+    assert result.stop_reason == "max_iterations"
+    assert result.steps == 3
 
 
 async def test_malformed_json_arguments_surface_to_model():
@@ -160,9 +111,9 @@ async def test_malformed_json_arguments_surface_to_model():
         ]
     )
     result = await _agent(model, [CalculatorTool()]).run("go")
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert "valid JSON" in tool_msgs[0]["content"]
-    assert result["final_answer"] == "recovered"
+    assert result.final_answer == "recovered"
 
 
 async def test_usage_and_cost_accumulate():
@@ -176,8 +127,8 @@ async def test_usage_and_cost_accumulate():
     )
     result = await _agent(model, [CalculatorTool()]).run("go")
     # Two LLM calls were recorded.
-    assert result["usage"]["total_tokens"] == 4
-    assert result["cost_usd"] == pytest.approx(0.002)
+    assert result.usage["total_tokens"] == 4
+    assert result.cost_usd == pytest.approx(0.002)
 
 
 # --------------------------------------------------------------------------- #
@@ -207,7 +158,7 @@ async def test_tool_requiring_approval_is_skipped_when_rejected():
         approval_callback=lambda name, args: False,
     )
     result = await agent.run("go")
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert "not approved" in tool_msgs[0]["content"]
 
 
@@ -225,7 +176,7 @@ async def test_tool_requiring_approval_runs_when_approved():
         approval_callback=lambda name, args: True,
     )
     result = await agent.run("go")
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert tool_msgs[0]["content"] == "executed"
 
 
@@ -237,42 +188,23 @@ async def test_yolo_mode_auto_approves():
         ]
     )
     result = await _agent(model, [_ApprovalTool()], yolo_mode=True).run("go")
-    tool_msgs = [m for m in result["messages"] if m["role"] == "tool"]
+    tool_msgs = [m for m in result.messages if m["role"] == "tool"]
     assert tool_msgs[0]["content"] == "executed"
 
 
 # --------------------------------------------------------------------------- #
 # Streaming
 # --------------------------------------------------------------------------- #
-def _chunk(content: str | None = None, finish_reason: str | None = None, usage=None):
-    delta = SimpleNamespace(content=content, tool_calls=None)
-    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
-    return SimpleNamespace(choices=[choice], usage=usage)
-
-
-class _StreamModel(FakeModel):
-    async def acompletion(self, messages, tools=None, stream: bool = False):
-        self.calls.append({"stream": stream})
-        assert stream is True
-
-        async def gen():
-            yield _chunk(content="Hel")
-            yield _chunk(content="lo")
-            yield _chunk(finish_reason="stop", usage={"prompt_tokens": 1})
-
-        return gen()
-
-
 async def test_streaming_accumulates_content():
     from rich.console import Console
 
     buffer = io.StringIO()
     console = Console(file=buffer, force_terminal=False)
-    model = _StreamModel([])
+    model = StreamModel([])
     result = await _agent(model).run("hi", stream=True, console=console)
 
-    assert result["final_answer"] == "Hello"
-    assert result["completed"] is True
+    assert result.final_answer == "Hello"
+    assert result.completed is True
     assert "Hello" in buffer.getvalue()
 
 
@@ -290,16 +222,16 @@ def test_tool_json_schema_shape():
 
 async def test_router_unknown_tool_returns_error():
     router = ToolRouter([CalculatorTool()])
-    out, success = await router.call_tool("nope", {})
-    assert success is False
-    assert "Unknown tool" in out
+    result = await router.call_tool("nope", {})
+    assert result.is_error is True
+    assert "Unknown tool" in result.text
 
 
 async def test_router_catches_tool_exception():
     router = ToolRouter([CalculatorTool()])
-    out, success = await router.call_tool("calculator", {"expression": "1/0"})
-    assert success is False
-    assert "error" in out.lower()
+    result = await router.call_tool("calculator", {"expression": "1/0"})
+    assert result.is_error is True
+    assert "error" in result.text.lower()
 
 
 async def test_calculator_tool_direct():

@@ -6,8 +6,10 @@ function-calling schema via :meth:`to_json_schema`, and implements an **async**
 ``requires_approval`` — when True the agent loop pauses for human confirmation
 before executing the tool (unless approval is auto-granted).
 
-A tool's ``forward`` may optionally declare a ``tool_call_id`` parameter; the
-:class:`~diorama.agents.router.ToolRouter` injects it when present.
+A tool's ``forward`` may optionally declare ``tool_call_id`` and/or ``signal``
+parameters; the :class:`~diorama.core.router.ToolRouter` injects them when present.
+``signal`` is the run's :class:`~diorama.core.cancellation.CancellationToken`, which a
+long-running tool should poll so ``ReactAgent.cancel()`` can stop it promptly.
 """
 
 from __future__ import annotations
@@ -118,13 +120,14 @@ class Tool(BaseModel):
     async def forward(self, **kwargs: Any) -> Any:
         """Execute the tool. Must be overridden by subclasses.
 
-        The router injects ``tool_call_id`` into ``kwargs`` when the overriding method
-        declares that parameter in its signature. All other keys come directly from
-        the model's parsed ``arguments`` dict.
+        The router injects ``tool_call_id`` and ``signal`` into ``kwargs`` when the
+        overriding method declares those parameters in its signature. All other keys
+        come directly from the model's parsed ``arguments`` dict.
 
         Args:
             **kwargs: Tool-specific keyword arguments parsed from the model's tool
-                call, plus an optional ``tool_call_id`` injected by the router.
+                call, plus an optional ``tool_call_id`` and ``signal`` injected by the
+                router.
 
         Returns:
             Any: JSON-serialisable result that the router stringifies and returns to

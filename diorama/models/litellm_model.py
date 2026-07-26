@@ -67,6 +67,41 @@ def _extract_reasoning_tokens(usage: Any) -> int:
     return int(val or 0)
 
 
+def extract_reasoning(message_or_delta: Any) -> tuple[str | None, list | None]:
+    """Return ``(reasoning_content, thinking_blocks)`` from a message or stream delta.
+
+    Reasoning models return their thinking alongside the visible answer. litellm
+    normalises this to two fields: ``reasoning_content`` (plain text, output-only)
+    and ``thinking_blocks`` (Anthropic's signed blocks, which **must** be sent back
+    verbatim on the next request or the provider rejects the conversation).
+
+    Which of the two you get depends on the route, not just the model: the native
+    Anthropic route populates ``thinking_blocks``, while the same model reached
+    through OpenRouter returns ``reasoning_content`` only. Some routes tuck the
+    blocks into ``provider_specific_fields`` instead, so that is checked too.
+
+    Args:
+        message_or_delta (Any): A litellm message or streaming delta object.
+
+    Returns:
+        tuple[str | None, list | None]: The reasoning text and thinking blocks, each
+            None when the provider did not report it.
+    """
+    reasoning = _u(message_or_delta, "reasoning_content")
+    blocks = _u(message_or_delta, "thinking_blocks")
+    if blocks is None:
+        extras = _u(message_or_delta, "provider_specific_fields")
+        if isinstance(extras, dict):
+            blocks = extras.get("thinking_blocks")
+    if blocks is not None:
+        blocks = [
+            block if isinstance(block, dict) else dict(block)
+            for block in blocks
+            if block is not None
+        ] or None
+    return (reasoning or None), blocks
+
+
 def _extract_actual_cost(usage: Any) -> float | None:
     """OpenRouter's real per-request USD cost when usage accounting is on, else None."""
     for key in ("cost", "total_cost"):
@@ -94,6 +129,10 @@ class LiteLLMModel(BaseModel):
         api_base (str | None): Override the provider base URL (e.g. for local inference).
         timeout (int): Request timeout in seconds. Defaults to 600.
         enable_prompt_caching (bool): Whether to inject Anthropic cache breakpoints. Defaults to True.
+        reasoning_effort (str | None): Request extended thinking from reasoning-capable
+            models (``"minimal"``, ``"low"``, ``"medium"``, ``"high"``). litellm maps
+            this to each provider's native control (e.g. an Anthropic thinking budget).
+            None leaves the provider default.
         cumulative (dict[str, float]): Accumulated token and cost counters across all calls.
     """
 
@@ -103,6 +142,7 @@ class LiteLLMModel(BaseModel):
     api_base: str | None = None
     timeout: int = 600
     enable_prompt_caching: bool = True
+    reasoning_effort: str | None = None
 
     cumulative: dict[str, float] = Field(
         default_factory=lambda: {
@@ -159,6 +199,8 @@ class LiteLLMModel(BaseModel):
             kwargs["max_tokens"] = self.max_tokens
         if self.api_base:
             kwargs["api_base"] = self.api_base
+        if self.reasoning_effort:
+            kwargs["reasoning_effort"] = self.reasoning_effort
         if stream:
             kwargs["stream_options"] = {"include_usage": True}
         # Ask OpenRouter to include the real per-request cost in usage so we can

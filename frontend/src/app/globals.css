@@ -1,0 +1,168 @@
+@import "tailwindcss";
+
+/* next-themes toggles a class on <html>, so the dark variant keys off that class
+   rather than Tailwind v4's default prefers-color-scheme media query. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Warm parchment in light, low-glare charcoal in dark. Values are OKLCH so the
+   two themes stay perceptually matched instead of one looking muddier. */
+:root {
+  --shell: oklch(0.964 0.006 85);
+  --shell-raised: oklch(0.985 0.005 85);
+  --paper: oklch(0.992 0.004 90);
+  --paper-edge: oklch(0.93 0.008 80);
+  --ink: oklch(0.24 0.012 60);
+  --ink-soft: oklch(0.47 0.014 62);
+  --ink-faint: oklch(0.63 0.012 65);
+  --rule: oklch(0.9 0.008 80);
+  --rule-strong: oklch(0.83 0.01 78);
+  --accent: oklch(0.52 0.088 52);
+  --accent-soft: oklch(0.9 0.03 65);
+  --danger: oklch(0.52 0.13 27);
+  --shadow-page: 0 1px 2px oklch(0.3 0.02 60 / 0.06),
+    0 18px 40px -24px oklch(0.3 0.02 60 / 0.35);
+}
+
+.dark {
+  --shell: oklch(0.185 0.008 60);
+  --shell-raised: oklch(0.225 0.009 60);
+  --paper: oklch(0.246 0.009 62);
+  --paper-edge: oklch(0.2 0.008 60);
+  --ink: oklch(0.925 0.012 80);
+  --ink-soft: oklch(0.73 0.012 78);
+  --ink-faint: oklch(0.58 0.011 75);
+  --rule: oklch(0.33 0.009 62);
+  --rule-strong: oklch(0.42 0.01 62);
+  --accent: oklch(0.76 0.09 62);
+  --accent-soft: oklch(0.38 0.04 55);
+  --danger: oklch(0.68 0.14 27);
+  --shadow-page: 0 1px 2px oklch(0 0 0 / 0.4), 0 22px 48px -26px oklch(0 0 0 / 0.75);
+}
+
+@theme inline {
+  --color-shell: var(--shell);
+  --color-shell-raised: var(--shell-raised);
+  --color-paper: var(--paper);
+  --color-paper-edge: var(--paper-edge);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-faint: var(--ink-faint);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+
+  --font-serif: var(--font-newsreader), ui-serif, Georgia, serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+
+  --shadow-page: var(--shadow-page);
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--shell);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: var(--accent-soft);
+    color: var(--ink);
+  }
+
+  /* Quiet, paper-coloured scrollbars — default chrome is loud enough to break the
+     illusion of a page in an otherwise borderless reading surface. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--rule-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--rule-strong);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Small-caps label used for every piece of chrome text: TOC labels, statuses,
+     metadata. Keeps the UI's voice clearly separate from the book's own voice. */
+  .label {
+    font-family: var(--font-sans);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 0.6875rem;
+    font-weight: 500;
+  }
+
+  /* The reader's typeset column. Text reflows into fixed-width CSS columns and a
+     page turn is a translate across them — see usePagination. */
+  .typeset {
+    font-family: var(--font-serif);
+    color: var(--ink);
+    hyphens: auto;
+    -webkit-hyphens: auto;
+    orphans: 2;
+    widows: 2;
+  }
+
+  .typeset p {
+    margin: 0;
+    text-indent: 1.35em;
+    text-align: justify;
+  }
+
+  .typeset p:first-of-type {
+    text-indent: 0;
+  }
+
+  /* Drop cap on the section's opening paragraph only — set via ::first-letter so
+     it stays correct wherever pagination lands. */
+  .typeset[data-opening="true"] p:first-of-type::first-letter {
+    float: left;
+    font-size: 3.1em;
+    line-height: 0.82;
+    padding: 0.06em 0.08em 0 0;
+    font-weight: 500;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+
+  /* A page is paper first: a faint warm gradient, never a flat rectangle. */
+  .page-surface {
+    background-image: linear-gradient(
+      to bottom,
+      var(--paper) 0%,
+      color-mix(in oklch, var(--paper) 94%, var(--paper-edge)) 100%
+    );
+  }
+}

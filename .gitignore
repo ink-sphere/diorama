@@ -217,3 +217,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# frontend/ (Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env*.local
+frontend/next-env.d.ts
+frontend/*.tsbuildinfo
+
+# Diorama runtime data (uploads, extracted structures, sessions, library index)
+.diorama_data/

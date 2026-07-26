@@ -1,114 +1,137 @@
-"""Tool registry + dispatcher (adapted from diorama's ``ToolRouter``).
+"""Tool registry + dispatcher.
 
 Holds the available tools, exports their OpenAI schemas for the LLM, and routes a
 parsed tool call to the right ``async forward``. It introspects each tool's
-``forward`` signature and injects ``tool_call_id`` when the tool declares it, so
-most tools stay pure while a few can learn which call they belong to.
+``forward`` signature and injects ``tool_call_id``, ``signal``, and ``on_update``
+when the tool declares them, so most tools stay pure while a few can learn which
+call they belong to, poll the run's cancellation token, or report progress.
 
-Tool execution errors are caught and returned to the agent as a JSON error string
-(with ``success=False``) rather than crashing the loop — this is what lets the model
-observe a failure and adapt on the next turn.
+Tools can be **deferred**: registered but hidden from the model until something
+activates them (typically a :class:`~diorama.core.results.ToolResult` carrying
+``added_tool_names``). This keeps a large toolset out of the prompt until a
+discovery step establishes it is relevant.
+
+Tool execution errors are caught and returned as a failed
+:class:`~diorama.core.results.ToolResult` rather than crashing the loop — this is
+what lets the model observe a failure and adapt on the next turn.
 """
 
 from __future__ import annotations
 
 import inspect
-import json
-from typing import Any
+from typing import Any, Callable
 
+from diorama.core.results import ToolResult, stringify
 from diorama.core.tool import Tool
 
-
-def _stringify(result: Any) -> str:
-    """Coerce a tool result into a string suitable for a ``role: tool`` message.
-
-    Strings pass through unchanged. Anything else is JSON-serialised with
-    ``default=str`` so non-serialisable objects fall back to their ``str()``
-    representation; if JSON serialisation itself raises, the raw ``str()`` is used.
-
-    Args:
-        result (Any): The raw value returned by a tool's ``forward`` method.
-
-    Returns:
-        str: A string representation of ``result``.
-    """
-    if isinstance(result, str):
-        return result
-    try:
-        return json.dumps(result, ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
-        return str(result)
+ProgressCallback = Callable[[Any], None]
 
 
 class ToolRouter:
     """Registry and async dispatcher for :class:`Tool` instances.
 
     Attributes:
-        tools (dict[str, Tool]): Mapping from tool name to tool instance, populated
-            via :meth:`register`.
+        tools (dict[str, Tool]): Mapping from tool name to tool instance.
+        active (set[str]): Names currently exposed to the model. Deferred tools are
+            registered but absent from this set until :meth:`activate` is called.
     """
 
-    def __init__(self, tools: list[Tool] | None = None) -> None:
-        """Initialise the router and optionally pre-register a list of tools.
+    def __init__(
+        self,
+        tools: list[Tool] | None = None,
+        deferred_tools: list[Tool] | None = None,
+    ) -> None:
+        """Initialise the router.
 
         Args:
-            tools (list[Tool] | None): Initial set of tools to register. Defaults to
-                None (empty registry).
+            tools (list[Tool] | None): Tools exposed to the model immediately.
+            deferred_tools (list[Tool] | None): Tools registered but hidden until
+                activated.
         """
         self.tools: dict[str, Tool] = {}
+        self.active: set[str] = set()
         for tool in tools or []:
             self.register(tool)
+        for tool in deferred_tools or []:
+            self.register(tool, active=False)
 
-    def register(self, tool: Tool) -> None:
+    def register(self, tool: Tool, *, active: bool = True) -> None:
         """Add a tool to the registry, keyed by its ``tool_name``.
 
         Args:
             tool (Tool): The tool to register. If a tool with the same name already
                 exists it is silently replaced.
+            active (bool): Whether the tool is immediately visible to the model.
         """
         self.tools[tool.tool_name] = tool
+        if active:
+            self.active.add(tool.tool_name)
+        else:
+            self.active.discard(tool.tool_name)
 
-    def get(self, name: str) -> Tool | None:
-        """Look up a tool by name.
+    def activate(self, *names: str) -> list[str]:
+        """Expose deferred tools to the model.
+
+        Unknown names are ignored — a tool asking for something that does not exist
+        should not break the run.
 
         Args:
-            name (str): The ``tool_name`` to look up.
+            *names (str): Tool names to activate.
 
         Returns:
-            Tool | None: The registered tool, or ``None`` if not found.
+            list[str]: The names that were actually newly activated.
         """
+        activated = []
+        for name in names:
+            if name in self.tools and name not in self.active:
+                self.active.add(name)
+                activated.append(name)
+        return activated
+
+    def get(self, name: str) -> Tool | None:
+        """Look up a tool by name, whether active or deferred."""
         return self.tools.get(name)
 
     def get_tool_specs_for_llm(self) -> list[dict[str, Any]]:
-        """Return all registered tool schemas in OpenAI function-calling format."""
-        return [tool.to_json_schema() for tool in self.tools.values()]
+        """Return the *active* tool schemas in OpenAI function-calling format."""
+        return [
+            tool.to_json_schema()
+            for name, tool in self.tools.items()
+            if name in self.active
+        ]
 
     async def call_tool(
         self,
         tool_name: str,
         arguments: dict[str, Any],
         tool_call_id: str | None = None,
-    ) -> tuple[str, bool]:
-        """Execute ``tool_name`` and return ``(output_string, success)``.
+        signal: Any = None,
+        on_update: ProgressCallback | None = None,
+    ) -> ToolResult:
+        """Execute ``tool_name`` and return its normalised result.
 
-        ``tool_call_id`` is injected only when the tool's ``forward`` declares it.
-        Unknown tools and exceptions raised by ``forward`` are returned as JSON error
-        strings with ``success=False`` so the agent can observe and adapt.
+        A tool may return a :class:`~diorama.core.results.ToolResult` or any plain
+        value (which is stringified). Deferred tools can be invoked once activated;
+        calling an unregistered tool yields a failed result rather than raising.
 
         Args:
             tool_name (str): The name of the tool to invoke.
             arguments (dict[str, Any]): Parsed arguments from the model's tool call.
             tool_call_id (str | None): The id of the originating tool call, injected
-                into ``forward`` when declared. Defaults to None.
+                into ``forward`` when declared.
+            signal (CancellationToken | None): The run's cancellation token, injected
+                into ``forward`` when declared so long-running tools can bail out.
+            on_update (ProgressCallback | None): Progress sink, injected into
+                ``forward`` when declared. Each call reports a partial result.
 
         Returns:
-            tuple[str, bool]: The stringified output and whether the call succeeded.
+            ToolResult: The tool's output, with ``is_error`` set when it failed.
         """
         tool = self.tools.get(tool_name)
         if tool is None:
-            return _stringify({"error": f"Unknown tool: {tool_name}"}), False
+            return ToolResult.error(stringify({"error": f"Unknown tool: {tool_name}"}))
 
-        # Inject tool_call_id only when the tool's forward accepts it.
+        # Inject the optional context parameters the tool actually declares.
         try:
             params = inspect.signature(tool.forward).parameters
         except (TypeError, ValueError):
@@ -117,9 +140,12 @@ class ToolRouter:
         call_kwargs = dict(arguments)
         if "tool_call_id" in params:
             call_kwargs["tool_call_id"] = tool_call_id
+        if "signal" in params:
+            call_kwargs["signal"] = signal
+        if "on_update" in params:
+            call_kwargs["on_update"] = on_update or (lambda _partial: None)
 
         try:
-            result = await tool.forward(**call_kwargs)
-            return _stringify(result), True
+            return ToolResult.coerce(await tool.forward(**call_kwargs))
         except Exception as e:  # noqa: BLE001 — surfaced to the agent, not fatal
-            return _stringify({"error": str(e)}), False
+            return ToolResult.error(stringify({"error": str(e)}))

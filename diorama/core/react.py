@@ -1,25 +1,31 @@
-"""A basic ReAct agent over diorama's :class:`LiteLLMModel`.
+"""A stateful ReAct agent over diorama's :class:`LiteLLMModel`.
 
-This is the trimmed-down sibling of diorama's actor-based agent: a single
-``await agent.run(prompt)`` drives one native tool-calling loop. Per turn the agent
-calls the model with the registered tool schemas (``tool_choice="auto"``), executes
-any tool calls, feeds the results back, and repeats. **A turn ends when the model
-replies with no tool calls** (faithful to diorama's loop) — ``final_answer`` is an
-optional convenience tool, not a requirement.
+The agent drives a native tool-calling loop: per turn it calls the model with the
+registered tool schemas (``tool_choice="auto"``), executes any tool calls, feeds the
+results back, and repeats. **A turn ends when the model replies with no tool calls**
+— ``final_answer`` is an optional convenience tool, not a requirement.
 
-Production features kept (per the basic-agent brief):
+The loop itself emits nothing to a terminal. It yields typed
+:mod:`~diorama.core.events` that any number of subscribers consume, which is what
+lets the same agent drive a Rich console, an SSE stream, and a session recorder at
+once. :class:`~diorama.core.rendering.ConsoleRenderer` is the built-in subscriber
+that reproduces terminal output.
 
-* **Max-iteration guard** — the loop is bounded by ``max_iterations`` (``-1`` =
-  unbounded).
-* **LLM-call retries** — transient errors (timeouts, 5xx, rate limits) are retried
-  with backoff; other errors propagate.
-* **Optional per-tool approval** — a tool with ``requires_approval=True`` pauses for
-  confirmation unless approval is auto-granted (``yolo_mode`` / ``auto_approve``) or
-  resolved by an ``approval_callback``.
+Capabilities:
 
-Streaming: ``run(..., stream=True)`` prints assistant text deltas and tool activity
-to a Rich console as the agent works; the default non-streaming path just returns
-the result dict.
+* **Stateful history** — ``messages`` persists across calls, so ``prompt`` /
+  ``continue_`` build a real conversation. ``reset`` starts over.
+* **Cancellation** — ``cancel()`` stops the run at the next checkpoint (mid-stream,
+  between tool calls, at a turn boundary) and repairs history by answering every
+  orphaned tool call, so the transcript stays valid for the next request.
+* **Steering & follow-ups** — ``steer()`` injects a message at the next turn
+  boundary of a *running* agent; ``follow_up()`` queues work for after it settles.
+* **Automatic compaction** — when the estimated context crosses the model's
+  threshold, older history is replaced by a structured summary.
+* **Durable sessions** — with a :class:`~diorama.core.session.JsonlSessionStore`,
+  every message is appended to disk and a session can be resumed or branched.
+* **Max-turn guard**, **LLM-call retries** with backoff, and **optional per-tool
+  approval**.
 """
 
 from __future__ import annotations
@@ -27,13 +33,44 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from inspect import isawaitable
+from typing import Any, Callable, Literal
+
 from pydantic import BaseModel
+
+from diorama.core.cancellation import CancellationToken, SimpleCancellationToken
+from diorama.core.context import (
+    ContextCompactor,
+    ContextUsageEstimate,
+    estimate_context_tokens,
+    estimate_context_usage,
+)
+from diorama.core.events import (
+    AgentEndEvent,
+    AgentEvent,
+    AgentStartEvent,
+    CompactionEndEvent,
+    CompactionStartEvent,
+    MessageEndEvent,
+    MessageStartEvent,
+    MessageUpdateEvent,
+    RetryEvent,
+    ToolExecutionEndEvent,
+    ToolExecutionStartEvent,
+    ToolExecutionUpdateEvent,
+    TurnEndEvent,
+    TurnStartEvent,
+)
 from diorama.core.prompts import SYSTEM_PROMPT
+from diorama.core.rendering import short_text
+from diorama.core.results import ToolResult, image_followup_message
 from diorama.core.router import ToolRouter
+from diorama.core.session import JsonlSessionStore
 from diorama.core.tool import Tool
-from diorama.models.litellm_model import LiteLLMModel
+from diorama.models.litellm_model import LiteLLMModel, extract_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -41,19 +78,159 @@ _MAX_LLM_RETRIES = 3
 _RETRY_DELAYS = [5, 15, 30]
 _RATE_LIMIT_DELAYS = [30, 60]
 
+INTERRUPTED_TOOL_RESULT = "Tool call interrupted by user"
+
+EventListener = Callable[[AgentEvent], "Awaitable[None] | None"]
+QueueMode = Literal["one_at_a_time", "all"]
+
+
+@dataclass(frozen=True)
+class ToolInvocation:
+    """One tool call as the loop is about to run it.
+
+    Attributes:
+        tool_call_id (str): The provider's id for this call.
+        name (str): The tool being invoked.
+        arguments (dict): The parsed arguments.
+    """
+
+    tool_call_id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+# A gate: return ``(blocked, reason)``. Blocking substitutes ``reason`` as a failed
+# tool result, so the model learns why rather than silently losing the call.
+BeforeToolCall = Callable[
+    [ToolInvocation], "Awaitable[tuple[bool, str | None]] | tuple[bool, str | None]"
+]
+# A rewriter: return the result to use in place of what the tool produced.
+AfterToolCall = Callable[
+    [ToolInvocation, ToolResult], "Awaitable[ToolResult] | ToolResult"
+]
+
 
 class ReactAgentResult(BaseModel):
-    final_answer: str
-    completed: bool
-    stop_reason: str
-    steps: int
-    messages: list
-    usage: dict
-    cost_usd: float
+    """The outcome of one ``run`` / ``prompt`` call.
+
+    Attributes:
+        final_answer (str | None): The last assistant reply that carried no tool
+            calls. None when the run was cancelled, hit the turn limit, or the model
+            returned empty content.
+        completed (bool): Whether the run ended because the model was done.
+        stop_reason (str): ``completed``, ``max_iterations``, ``cancelled``, or
+            ``length`` (the provider truncated the reply).
+        steps (int): How many model turns were executed.
+        messages (list): Full history after the run.
+        usage (dict): The model's cumulative token counters.
+        cost_usd (float): The model's cumulative spend.
+    """
+
+    final_answer: str | None = None
+    completed: bool = False
+    stop_reason: str = "completed"
+    steps: int = 0
+    messages: list = []
+    usage: dict = {}
+    cost_usd: float = 0.0
+
+
+@dataclass(frozen=True)
+class QueuedMessages:
+    """A snapshot of the steering and follow-up queues.
+
+    Attributes:
+        steering (tuple[dict, ...]): Messages that will be injected at the next turn
+            boundary of the running agent.
+        follow_up (tuple[dict, ...]): Messages that will start a new turn once the
+            agent would otherwise have settled.
+    """
+
+    steering: tuple[dict[str, Any], ...] = ()
+    follow_up: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def count(self) -> int:
+        """Total number of queued messages."""
+        return len(self.steering) + len(self.follow_up)
+
+
+@dataclass
+class _RunState:
+    """Mutable bookkeeping shared between the loop body and its caller."""
+
+    turn: int = 0
+    stop_reason: str = "completed"
+    final_answer: str | None = None
+    completed: bool = False
+
+
+def _status_code(error: Exception) -> int | None:
+    """Return the HTTP status carried by a provider exception, if any."""
+    for attribute in ("status_code", "code", "http_status"):
+        value = getattr(error, attribute, None)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def _litellm_exception_classes() -> tuple[tuple[type, ...], tuple[type, ...]]:
+    """Return ``(rate_limit_types, transient_types)`` from litellm, if importable.
+
+    Classifying on exception type is far more reliable than matching substrings of
+    ``str(error)``, which misfires on messages that merely quote a status code.
+    The substring heuristic remains as a fallback for wrapped or bare exceptions.
+    """
+    try:
+        import litellm
+    except ImportError:  # pragma: no cover - litellm is a hard dependency
+        return (), ()
+
+    def pick(*names: str) -> tuple[type, ...]:
+        found = [getattr(litellm, name, None) for name in names]
+        return tuple(c for c in found if isinstance(c, type))
+
+    rate_limit = pick("RateLimitError")
+    transient = pick(
+        "Timeout",
+        "APIConnectionError",
+        "APIError",
+        "InternalServerError",
+        "ServiceUnavailableError",
+    )
+    # Bare transport failures reach us unwrapped when the stream dies mid-flight.
+    return rate_limit, transient + (TimeoutError, ConnectionError)
+
+
+_RATE_LIMIT_TYPES, _TRANSIENT_TYPES = _litellm_exception_classes()
+
+_TRANSIENT_PATTERNS = (
+    "timeout",
+    "timed out",
+    "503",
+    "service unavailable",
+    "502",
+    "bad gateway",
+    "500",
+    "internal server error",
+    "overloaded",
+    "capacity",
+    "connection reset",
+    "connection refused",
+    "connection error",
+    "eof",
+    "broken pipe",
+)
 
 
 def _is_rate_limit_error(error: Exception) -> bool:
-    """Return True when the error looks like an API rate-limit response."""
+    """Return True when the error is an API rate-limit response."""
+    if _RATE_LIMIT_TYPES and isinstance(error, _RATE_LIMIT_TYPES):
+        return True
+    if _status_code(error) == 429:
+        return True
     s = str(error).lower()
     return any(
         p in s
@@ -62,26 +239,20 @@ def _is_rate_limit_error(error: Exception) -> bool:
 
 
 def _is_transient_error(error: Exception) -> bool:
-    """Return True when the error is transient and safe to retry (5xx/timeout/conn)."""
+    """Return True when the error is transient and safe to retry (5xx/timeout/conn).
+
+    Client errors (4xx other than 429) are never retried: a malformed request or a
+    bad key will fail identically on every attempt.
+    """
+    if _is_rate_limit_error(error):
+        return True
+    status = _status_code(error)
+    if status is not None:
+        return status >= 500
+    if _TRANSIENT_TYPES and isinstance(error, _TRANSIENT_TYPES):
+        return True
     s = str(error).lower()
-    patterns = (
-        "timeout",
-        "timed out",
-        "503",
-        "service unavailable",
-        "502",
-        "bad gateway",
-        "500",
-        "internal server error",
-        "overloaded",
-        "capacity",
-        "connection reset",
-        "connection refused",
-        "connection error",
-        "eof",
-        "broken pipe",
-    )
-    return _is_rate_limit_error(error) or any(p in s for p in patterns)
+    return any(p in s for p in _TRANSIENT_PATTERNS)
 
 
 def _retry_delay_for(error: Exception, attempt: int) -> int | None:
@@ -105,27 +276,74 @@ def _retry_delay_for(error: Exception, attempt: int) -> int | None:
     return schedule[attempt]
 
 
+# Provider finish reasons that mean the turn did not end on the model's own terms.
+# "stop" is normal completion; "tool_calls"/"function_call" mean the loop continues.
+_ABNORMAL_FINISH_REASONS = {
+    "length": "length",
+    "max_tokens": "length",
+    "content_filter": "content_filter",
+}
+
+
+def _abnormal_stop_reason(finish_reason: str | None) -> str | None:
+    """Map a provider finish reason to a stop reason, or None when it was normal."""
+    return _ABNORMAL_FINISH_REASONS.get((finish_reason or "").lower())
+
+
+def _last_tool_text(tool_results: list[dict[str, Any]]) -> str | None:
+    """Return the text of the last tool result, used when a tool ends the run."""
+    return tool_results[-1].get("content") if tool_results else None
+
+
 # --------------------------------------------------------------------------- #
 # Message helpers + normalised LLM result
 # --------------------------------------------------------------------------- #
+def _user_message(content: str) -> dict[str, Any]:
+    """Build a user message."""
+    return {"role": "user", "content": content}
+
+
 def _assistant_message(
-    content: str | None, tool_calls: list[dict] | None
+    content: str | None,
+    tool_calls: list[dict] | None,
+    *,
+    reasoning_content: str | None = None,
+    thinking_blocks: list | None = None,
 ) -> dict[str, Any]:
-    """Build an assistant message, attaching ``tool_calls`` only when present."""
+    """Build an assistant message, attaching optional parts only when present.
+
+    ``thinking_blocks`` are Anthropic's signed reasoning blocks. They are stored on
+    the message and replayed verbatim, because a conversation that drops them is
+    rejected once extended thinking is in play.
+    """
     msg: dict[str, Any] = {"role": "assistant", "content": content}
     if tool_calls:
         msg["tool_calls"] = tool_calls
+    if reasoning_content:
+        msg["reasoning_content"] = reasoning_content
+    if thinking_blocks:
+        msg["thinking_blocks"] = thinking_blocks
     return msg
 
 
-def _tool_message(content: str, tool_call_id: str, name: str) -> dict[str, Any]:
-    """Build a ``role: tool`` result message for one executed tool call."""
-    return {
+def _tool_message(
+    content: str, tool_call_id: str, name: str, *, is_error: bool = False
+) -> dict[str, Any]:
+    """Build a ``role: tool`` result message for one executed tool call.
+
+    ``is_error`` is loop-only bookkeeping: it stays in durable history and on events,
+    and is stripped before the message reaches the provider (Chat Completions has no
+    field for it).
+    """
+    message: dict[str, Any] = {
         "role": "tool",
         "content": content,
         "tool_call_id": tool_call_id,
         "name": name,
     }
+    if is_error:
+        message["is_error"] = True
+    return message
 
 
 @dataclass
@@ -137,30 +355,46 @@ class LLMResult:
         tool_calls_acc (dict[int, dict]): Tool calls keyed by their index, each with
             ``id``, ``type``, and ``function`` (``name`` + ``arguments``) sub-keys.
         finish_reason (str | None): Model's stop reason, or None if not reported.
+        reasoning_content (str | None): The model's thinking text, when reported.
+        thinking_blocks (list | None): Provider-signed thinking blocks to replay.
         usage (dict): Per-call usage slice as returned by ``model.record_usage``.
     """
 
     content: str | None
     tool_calls_acc: dict[int, dict]
     finish_reason: str | None
+    reasoning_content: str | None = None
+    thinking_blocks: list | None = None
     usage: dict = field(default_factory=dict)
 
+    @property
+    def tool_calls(self) -> list[dict]:
+        """Tool calls in index order."""
+        return [self.tool_calls_acc[i] for i in sorted(self.tool_calls_acc)]
 
-def _short(text: Any, limit: int = 200) -> str:
-    """Truncate a value's string form for compact console logging."""
-    s = text if isinstance(text, str) else json.dumps(text, default=str)
-    return s if len(s) <= limit else s[: limit - 1] + "…"
+    def to_message(self) -> dict[str, Any]:
+        """Build the assistant message this result represents."""
+        return _assistant_message(
+            self.content,
+            self.tool_calls or None,
+            reasoning_content=self.reasoning_content,
+            thinking_blocks=self.thinking_blocks,
+        )
 
 
 class ReactAgent:
-    """A basic ReAct agent over diorama's async :class:`LiteLLMModel`.
+    """A stateful ReAct agent over diorama's async :class:`LiteLLMModel`.
 
     Attributes:
         model (LiteLLMModel): The LLM wrapper used for every completion.
         tool_router (ToolRouter): Registry/dispatcher for the agent's tools.
         system_prompt (str): The base system prompt (plus any ``instructions``).
-        max_iterations (int): Turn ceiling for one ``run`` (``-1`` = unbounded).
+        messages (list[dict]): Live conversation history, system message first.
+        max_iterations (int): Turn ceiling per run (``-1`` or None = unbounded).
         yolo_mode (bool): When True, tools requiring approval are auto-approved.
+        session (JsonlSessionStore | None): Durable append-only session storage.
+        compactor (ContextCompactor | None): Automatic history compaction.
+        last_result (ReactAgentResult | None): Outcome of the most recent run.
     """
 
     def __init__(
@@ -173,11 +407,20 @@ class ReactAgent:
         instructions: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
-        max_iterations: int = 25,
+        max_iterations: int | None = 25,
         yolo_mode: bool = True,
         enable_prompt_caching: bool = True,
         approval_callback: Callable[[str, dict], bool] | None = None,
         weave_project: str | None = None,
+        session: JsonlSessionStore | None = None,
+        auto_compact: bool = True,
+        compactor: ContextCompactor | None = None,
+        context_window_tokens: int | None = None,
+        queue_mode: QueueMode = "one_at_a_time",
+        deferred_tools: list[Tool] | None = None,
+        before_tool_call: BeforeToolCall | None = None,
+        after_tool_call: AfterToolCall | None = None,
+        preserve_reasoning: bool = True,
     ) -> None:
         """Initialise the agent with its tool set and configuration.
 
@@ -190,13 +433,35 @@ class ReactAgent:
             instructions (str | None): Extra instructions appended to the system prompt.
             temperature (float): Sampling temperature (when building the model).
             max_tokens (int | None): Completion token cap (when building the model).
-            max_iterations (int): Turn ceiling per ``run`` (``-1`` disables it).
+            max_iterations (int | None): Turn ceiling per run. ``-1`` or None disables it.
             yolo_mode (bool): Auto-approve tools that declare ``requires_approval``.
             enable_prompt_caching (bool): Pass-through to the model wrapper.
             approval_callback (Callable[[str, dict], bool] | None): Called as
                 ``(tool_name, arguments) -> bool`` to resolve approval when a tool
                 requires it and auto-approval is off.
             weave_project (str | None): When set, initialise W&B Weave tracing.
+            session (JsonlSessionStore | None): Durable session storage. When it
+                already holds messages they become this agent's starting history.
+            auto_compact (bool): Summarise older history when it nears the context
+                window. Defaults to True.
+            compactor (ContextCompactor | None): Custom compaction policy. Built from
+                the model when omitted and ``auto_compact`` is on.
+            context_window_tokens (int | None): Override the model's context window
+                for compaction purposes.
+            queue_mode (QueueMode): Whether a turn boundary drains one queued message
+                or all of them.
+            deferred_tools (list[Tool] | None): Tools registered but hidden from the
+                model until a tool result activates them via ``added_tool_names``.
+            before_tool_call (BeforeToolCall | None): Gate called as
+                ``(invocation) -> (blocked, reason)`` before every tool call. May be
+                sync or async. Runs after ``approval_callback``.
+            after_tool_call (AfterToolCall | None): Rewriter called as
+                ``(invocation, result) -> result`` after every tool call, including
+                blocked and failed ones. May be sync or async.
+            preserve_reasoning (bool): Keep reasoning/thinking blocks in history and
+                replay the signed blocks to the provider. Defaults to True; set False
+                to strip them (smaller context, but Anthropic extended thinking then
+                cannot be continued across turns).
         """
         self.model = model or LiteLLMModel(
             model_id=model_id,
@@ -205,13 +470,35 @@ class ReactAgent:
             enable_prompt_caching=enable_prompt_caching,
         )
         self.tools = list(tools)
-        self.tool_router = ToolRouter(self.tools)
+        self.deferred_tools = list(deferred_tools or [])
+        self.tool_router = ToolRouter(self.tools, self.deferred_tools)
         self.system_prompt = system_prompt + (
             f"\n\n{instructions}" if instructions else ""
         )
         self.max_iterations = max_iterations
         self.yolo_mode = yolo_mode
         self.approval_callback = approval_callback
+        self.before_tool_call = before_tool_call
+        self.after_tool_call = after_tool_call
+        self.preserve_reasoning = preserve_reasoning
+        self.queue_mode: QueueMode = queue_mode
+        self.session = session
+        self.auto_compact = auto_compact
+        self.compactor = compactor
+        if self.compactor is None and auto_compact:
+            self.compactor = ContextCompactor(
+                self.model, context_window_tokens=context_window_tokens
+            )
+        self.last_result: ReactAgentResult | None = None
+
+        self.messages: list[dict[str, Any]] = []
+        self._listeners: list[EventListener] = []
+        self._steering: deque[dict[str, Any]] = deque()
+        self._follow_up: deque[dict[str, Any]] = deque()
+        self._signal: SimpleCancellationToken | None = None
+        self._running = False
+
+        self._restore_or_seed()
         self._maybe_init_weave(weave_project)
 
     @staticmethod
@@ -226,140 +513,683 @@ class ReactAgent:
         except Exception as e:  # noqa: BLE001
             logger.warning("weave.init failed (continuing without tracing): %s", e)
 
+    def _restore_or_seed(self) -> None:
+        """Adopt an existing session's history, or start a fresh one."""
+        if self.session is not None:
+            state = self.session.state()
+            if state.messages:
+                self.messages = list(state.messages)
+                return
+            self.session.append_info(model_id=getattr(self.model, "model_id", None))
+        self._append({"role": "system", "content": self.system_prompt})
+
     # ----------------------------------------------------------------------- #
-    # Public API
+    # Subscriptions, queues, and control
     # ----------------------------------------------------------------------- #
+    def subscribe(self, listener: EventListener) -> Callable[[], None]:
+        """Register an event listener and return a function that unsubscribes it.
+
+        The listener may be sync or async and is called for every event, in
+        registration order, before the event is yielded to the run's consumer.
+        """
+        self._listeners.append(listener)
+
+        def unsubscribe() -> None:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+        return unsubscribe
+
+    @property
+    def is_running(self) -> bool:
+        """Whether a run is currently in progress."""
+        return self._running
+
+    @property
+    def queued_messages(self) -> QueuedMessages:
+        """A snapshot of both queues."""
+        return QueuedMessages(tuple(self._steering), tuple(self._follow_up))
+
+    def cancel(self) -> None:
+        """Request cancellation of the running agent (no-op when idle).
+
+        The run stops at its next checkpoint and history is repaired so every
+        outstanding tool call receives a result.
+        """
+        if self._signal is not None:
+            self._signal.cancel()
+
+    def steer(self, content: str) -> QueuedMessages:
+        """Queue a user message to be injected at the next turn boundary."""
+        return self.steer_message(_user_message(content))
+
+    def steer_message(self, message: dict[str, Any]) -> QueuedMessages:
+        """Queue a raw message to be injected at the next turn boundary."""
+        self._steering.append(message)
+        return self.queued_messages
+
+    def follow_up(self, content: str) -> QueuedMessages:
+        """Queue a user message to run once the agent would otherwise settle."""
+        return self.follow_up_message(_user_message(content))
+
+    def follow_up_message(self, message: dict[str, Any]) -> QueuedMessages:
+        """Queue a raw message to run once the agent would otherwise settle."""
+        self._follow_up.append(message)
+        return self.queued_messages
+
+    def clear_queues(self) -> QueuedMessages:
+        """Drop everything from both queues and return what was discarded."""
+        snapshot = self.queued_messages
+        self._steering.clear()
+        self._follow_up.clear()
+        return snapshot
+
+    def reset(self) -> None:
+        """Clear history back to the system message and drop queued messages.
+
+        With a session store this starts a **new root** in the same file rather than
+        appending to the old conversation, so replaying the session reproduces exactly
+        what the agent now holds. Nothing is deleted — the previous conversation
+        remains as its own branch. Use :meth:`branch` to rewind instead of starting over.
+        """
+        self._ensure_not_running()
+        self.clear_queues()
+        self.messages = []
+        if self.session is not None:
+            self.session.active_leaf_id = None
+        self._append({"role": "system", "content": self.system_prompt})
+
+    def branch(self, entry_id: str) -> None:
+        """Rewind to a point in the session tree and continue from there.
+
+        Args:
+            entry_id (str): The session entry to continue from.
+
+        Raises:
+            RuntimeError: If no session store is configured, or a run is in progress.
+        """
+        self._ensure_not_running()
+        if self.session is None:
+            raise RuntimeError("branch() requires a session store")
+        state = self.session.branch(entry_id)
+        self.messages = list(state.messages)
+
+    def context_usage(self) -> ContextUsageEstimate:
+        """Return the estimated context size of the next request."""
+        return estimate_context_usage(self.messages, self._tool_specs())
+
+    # ----------------------------------------------------------------------- #
+    # Public run API
+    # ----------------------------------------------------------------------- #
+    def stream_events(
+        self,
+        prompt: str | None = None,
+        *,
+        auto_approve: bool | None = None,
+        provider_stream: bool = False,
+    ) -> AsyncIterator[AgentEvent]:
+        """Run the agent and yield its events as they happen.
+
+        This is the primitive the other entry points are built on. ``is_running``
+        flips before the first event, so a caller can hand the agent to a UI and
+        immediately ``steer`` or ``cancel`` it.
+
+        Args:
+            prompt (str | None): A user message to start with. None continues the
+                existing conversation without adding anything.
+            auto_approve (bool | None): Override ``yolo_mode`` for this run.
+            provider_stream (bool): Request a streaming completion, which produces
+                ``message_update`` events for assistant text deltas.
+
+        Returns:
+            AsyncIterator[AgentEvent]: The run's event stream.
+
+        Raises:
+            RuntimeError: If a run is already in progress.
+        """
+        self._ensure_not_running()
+        self._append_interrupted_tool_results()
+        self._running = True
+        prompts = [_user_message(prompt)] if prompt is not None else []
+        return self._run(
+            prompts=prompts,
+            auto_approve=auto_approve,
+            provider_stream=provider_stream,
+        )
+
     async def run(
         self,
-        prompt: str,
+        prompt: str | None = None,
         *,
         stream: bool = False,
         auto_approve: bool | None = None,
         console: Any = None,
-    ) -> dict[str, Any]:
-        """Run one task to completion and return a result dict.
+    ) -> ReactAgentResult:
+        """Run one task to completion and return the result.
+
+        History is preserved across calls, so calling ``run`` twice continues the same
+        conversation. Use :meth:`reset` to start fresh.
 
         Args:
-            prompt (str): The task/question for the agent.
-            stream (bool): When True, print assistant text deltas and tool activity to
-                a Rich console as the agent works. Defaults to False.
+            prompt (str | None): The task/question for the agent. None continues from
+                the existing history (equivalent to :meth:`continue_`).
+            stream (bool): Request a streaming completion and print assistant text
+                deltas plus tool activity to a Rich console as the agent works.
             auto_approve (bool | None): Override ``yolo_mode`` for this run. None uses
                 the agent's ``yolo_mode``.
-            console (Any): Optional Rich ``Console`` for streaming output. One is
-                created when omitted and ``stream`` is True.
+            console (Any): Optional Rich ``Console`` for rendered output. Supplying
+                one attaches the console renderer even when ``stream`` is False.
 
         Returns:
-            dict[str, Any]: ``final_answer``, ``completed``, ``stop_reason``,
-                ``steps``, ``messages``, ``usage`` (cumulative), and ``cost_usd``.
+            ReactAgentResult: The final answer, stop reason, step count, full message
+                history, and cumulative usage/cost.
         """
-        if stream and console is None:
-            from rich.console import Console
+        unsubscribe: Callable[[], None] | None = None
+        if stream or console is not None:
+            from diorama.core.rendering import ConsoleRenderer
 
-            console = Console()
+            unsubscribe = self.subscribe(ConsoleRenderer(console))
+        try:
+            async for _ in self.stream_events(
+                prompt, auto_approve=auto_approve, provider_stream=stream
+            ):
+                pass
+        finally:
+            if unsubscribe is not None:
+                unsubscribe()
+        assert self.last_result is not None  # set in _run's finally
+        return self.last_result
 
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": prompt},
-        ]
-        tool_specs = self.tool_router.get_tool_specs_for_llm() or None
+    async def continue_(self, **kwargs: Any) -> ReactAgentResult:
+        """Resume the existing conversation without adding a new user message."""
+        return await self.run(None, **kwargs)
 
-        final_answer: str | None = None
-        completed = False
-        stop_reason = "max_iterations"
-        iteration = 0
-
-        while self.max_iterations == -1 or iteration < self.max_iterations:
-            iteration += 1
-            result = await self._call_llm(messages, tool_specs, stream, console)
-            tool_calls = [
-                result.tool_calls_acc[idx] for idx in sorted(result.tool_calls_acc)
-            ]
-            messages.append(_assistant_message(result.content, tool_calls or None))
-            if stream and console is not None and result.content:
-                console.print()  # end the streamed assistant line
-
-            if not tool_calls:
-                final_answer = result.content
-                completed = True
-                stop_reason = "completed"
-                break
-
-            await self._run_tool_calls(
-                tool_calls, messages, auto_approve, stream, console
-            )
-
-        return ReactAgentResult(
-            final_answer=final_answer,
-            completed=completed,
-            stop_reason=stop_reason,
-            steps=iteration,
-            messages=messages,
-            usage=dict(self.model.cumulative),
-            cost_usd=round(self.model.cumulative.get("cost_usd", 0.0), 6),
-        )
-
-    def run_sync(self, prompt: str, **kwargs: Any) -> dict[str, Any]:
+    def run_sync(self, prompt: str | None = None, **kwargs: Any) -> ReactAgentResult:
         """Blocking convenience wrapper around :meth:`run`."""
         return asyncio.run(self.run(prompt, **kwargs))
 
     # ----------------------------------------------------------------------- #
+    # Run lifecycle
+    # ----------------------------------------------------------------------- #
+    async def _run(
+        self,
+        *,
+        prompts: Sequence[dict[str, Any]],
+        auto_approve: bool | None,
+        provider_stream: bool,
+    ) -> AsyncIterator[AgentEvent]:
+        """Own the run's lifecycle: cancellation token, notification, teardown."""
+        signal = SimpleCancellationToken()
+        self._signal = signal
+        state = _RunState()
+        try:
+            async for event in self._loop(
+                state=state,
+                prompts=prompts,
+                auto_approve=auto_approve,
+                provider_stream=provider_stream,
+                signal=signal,
+            ):
+                await self._notify(event)
+                yield event
+        finally:
+            if signal.is_cancelled():
+                self._append_interrupted_tool_results()
+            if self._signal is signal:
+                self._signal = None
+            self._running = False
+            self.last_result = ReactAgentResult(
+                final_answer=state.final_answer,
+                completed=state.completed,
+                stop_reason=state.stop_reason,
+                steps=state.turn,
+                messages=list(self.messages),
+                usage=dict(self.model.cumulative),
+                cost_usd=round(self.model.cumulative.get("cost_usd", 0.0), 6),
+            )
+
+    async def _loop(
+        self,
+        *,
+        state: _RunState,
+        prompts: Sequence[dict[str, Any]],
+        auto_approve: bool | None,
+        provider_stream: bool,
+        signal: SimpleCancellationToken,
+    ) -> AsyncIterator[AgentEvent]:
+        """The ReAct loop proper. Yields events; never touches a console."""
+        yield AgentStartEvent()
+        for message in prompts:
+            for event in self._add_message(message):
+                yield event
+
+        pending: tuple[dict[str, Any], ...] = self._drain(self._steering)
+        active = True
+        while active:
+            has_more_tools = True
+            while has_more_tools or pending:
+                for message in pending:
+                    for event in self._add_message(message):
+                        yield event
+                pending = ()
+
+                # An earlier turn may have already settled; ending this way overrides
+                # that, so completion is cleared alongside the stop reason.
+                if signal.is_cancelled():
+                    state.stop_reason = "cancelled"
+                    state.completed = False
+                    active = False
+                    break
+                if self._turn_limit_reached(state.turn):
+                    state.stop_reason = "max_iterations"
+                    state.completed = False
+                    active = False
+                    break
+
+                async for event in self._maybe_compact():
+                    yield event
+
+                state.turn += 1
+                yield TurnStartEvent(turn=state.turn)
+
+                outcome: dict[str, Any] = {}
+                async for event in self._assistant_events(
+                    outcome, provider_stream, signal
+                ):
+                    yield event
+
+                assistant = outcome["message"]
+                calls = list(assistant.get("tool_calls") or [])
+                has_more_tools = bool(calls)
+
+                abnormal = _abnormal_stop_reason(outcome.get("finish_reason"))
+                if abnormal is not None:
+                    # A reply cut short mid-generation is not a finished turn — and
+                    # its tool calls, if any, may have truncated arguments. Stop
+                    # rather than executing them or reporting success.
+                    state.final_answer = assistant.get("content")
+                    state.stop_reason = abnormal
+                    state.completed = False
+                    yield TurnEndEvent(turn=state.turn, message=assistant)
+                    active = False
+                    break
+
+                if not calls:
+                    state.final_answer = assistant.get("content")
+                    state.completed = True
+                    state.stop_reason = "completed"
+
+                tool_results: list[dict[str, Any]] = []
+                terminated = False
+                for call in calls:
+                    async for event in self._execute_tool_call(
+                        call, auto_approve, signal
+                    ):
+                        yield event
+                        if isinstance(event, MessageEndEvent):
+                            tool_results.append(event.message)
+                        elif isinstance(event, ToolExecutionEndEvent):
+                            terminated = terminated or event.terminate
+
+                yield TurnEndEvent(
+                    turn=state.turn, message=assistant, tool_results=tool_results
+                )
+
+                if terminated:
+                    # A tool declared itself the end of the run.
+                    state.final_answer = _last_tool_text(tool_results)
+                    state.completed = True
+                    state.stop_reason = "tool_terminated"
+                    active = False
+                    break
+
+                pending = self._drain(self._steering)
+
+            if not active:
+                break
+            follow_ups = self._drain(self._follow_up)
+            if follow_ups:
+                pending = follow_ups
+                continue
+            break
+
+        yield AgentEndEvent(messages=list(self.messages), stop_reason=state.stop_reason)
+
+    async def _notify(self, event: AgentEvent) -> None:
+        """Deliver one event to every subscriber, awaiting async listeners."""
+        for listener in list(self._listeners):
+            result = listener(event)
+            if isawaitable(result):
+                await result
+
+    def _ensure_not_running(self) -> None:
+        """Guard against re-entrant runs.
+
+        Raises:
+            RuntimeError: If a run is already in progress.
+        """
+        if self._running:
+            raise RuntimeError(
+                "ReactAgent is already running; use steer() or follow_up() to queue "
+                "messages, or cancel() to stop it."
+            )
+
+    def _turn_limit_reached(self, turn: int) -> bool:
+        """Return True when ``max_iterations`` has been consumed."""
+        limit = self.max_iterations
+        if limit is None or limit == -1:
+            return False
+        return turn >= limit
+
+    # ----------------------------------------------------------------------- #
+    # History
+    # ----------------------------------------------------------------------- #
+    def _append(self, message: dict[str, Any]) -> None:
+        """Add a message to history and record it in the session, if any."""
+        self.messages.append(message)
+        if self.session is not None:
+            self.session.append_message(message)
+
+    def _add_message(self, message: dict[str, Any]) -> list[AgentEvent]:
+        """Append a message and return its start/end events."""
+        self._append(message)
+        return [MessageStartEvent(message=message), MessageEndEvent(message=message)]
+
+    def _provider_messages(self) -> list[dict[str, Any]]:
+        """Return history filtered and cleaned to what a provider will accept.
+
+        Two kinds of divergence between durable history and the wire format:
+
+        * An assistant message with neither content nor tool calls (nor thinking) is
+          kept for diagnostics but must not be replayed — providers reject it.
+        * Loop-only bookkeeping (``is_error`` on tool results, ``reasoning_content``,
+          which is output-only) is stripped. ``thinking_blocks`` are *kept*: Anthropic
+          requires the signed blocks back to continue an extended-thinking turn.
+        """
+        cleaned: list[dict[str, Any]] = []
+        for message in self.messages:
+            if (
+                message.get("role") == "assistant"
+                and not message.get("content")
+                and not message.get("tool_calls")
+                and not message.get("thinking_blocks")
+            ):
+                continue
+            drop = {"is_error", "reasoning_content"}
+            if not self.preserve_reasoning:
+                drop.add("thinking_blocks")
+            if drop & message.keys():
+                message = {k: v for k, v in message.items() if k not in drop}
+            cleaned.append(message)
+        return cleaned
+
+    def _append_interrupted_tool_results(self) -> int:
+        """Answer every tool call that never received a result.
+
+        A cancelled (or crashed) run can leave an assistant turn whose ``tool_calls``
+        have no matching ``role: tool`` messages, which every provider rejects on the
+        next request. This closes those gaps with an error result.
+
+        Returns:
+            int: How many placeholder results were appended.
+        """
+        returned = {
+            message.get("tool_call_id")
+            for message in self.messages
+            if message.get("role") == "tool"
+        }
+        added = 0
+        for message in list(self.messages):
+            if message.get("role") != "assistant":
+                continue
+            for call in message.get("tool_calls") or []:
+                call_id = call.get("id")
+                if call_id in returned:
+                    continue
+                returned.add(call_id)
+                self._append(
+                    _tool_message(
+                        INTERRUPTED_TOOL_RESULT,
+                        call_id,
+                        (call.get("function") or {}).get("name", "unknown"),
+                    )
+                )
+                added += 1
+        return added
+
+    def _drain(self, queue: deque[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+        """Pop queued messages according to ``queue_mode``."""
+        if not queue:
+            return ()
+        if self.queue_mode == "all":
+            messages = tuple(queue)
+            queue.clear()
+            return messages
+        return (queue.popleft(),)
+
+    # ----------------------------------------------------------------------- #
+    # Compaction
+    # ----------------------------------------------------------------------- #
+    def _tool_specs(self) -> list[dict[str, Any]] | None:
+        """Return the tool schemas sent to the model, or None when there are none."""
+        return self.tool_router.get_tool_specs_for_llm() or None
+
+    async def _maybe_compact(self) -> AsyncIterator[AgentEvent]:
+        """Summarise older history when the next request would overflow the window."""
+        if not self.auto_compact or self.compactor is None:
+            return
+        specs = self._tool_specs()
+        if not self.compactor.should_compact(self.messages, specs):
+            return
+
+        tokens_before = estimate_context_tokens(self.messages, specs)
+        yield CompactionStartEvent(tokens_before=tokens_before)
+        result = await self.compactor.compact(self.messages, specs)
+        if result is None:
+            # Nothing safe to drop (or summarisation failed) — carry on uncompacted.
+            yield CompactionEndEvent(
+                tokens_before=tokens_before,
+                tokens_after=tokens_before,
+                summary="",
+            )
+            return
+
+        self.messages = result.messages
+        if self.session is not None:
+            self.session.append_compaction(
+                summary=result.summary,
+                tokens_before=result.tokens_before,
+                tokens_after=result.tokens_after,
+                kept_tail_count=result.kept_tail_count,
+                dropped_count=result.dropped_count,
+            )
+        yield CompactionEndEvent(
+            tokens_before=result.tokens_before,
+            tokens_after=result.tokens_after,
+            summary=result.summary,
+        )
+
+    # ----------------------------------------------------------------------- #
     # Tool execution + approval
     # ----------------------------------------------------------------------- #
-    async def _run_tool_calls(
+    async def _execute_tool_call(
         self,
-        tool_calls: list[dict],
-        messages: list[dict[str, Any]],
+        call: dict[str, Any],
         auto_approve: bool | None,
-        stream: bool,
-        console: Any,
-    ) -> None:
-        """Execute each tool call in order and append its ``role: tool`` result."""
-        for tc in tool_calls:
-            name = tc["function"]["name"]
-            tc_id = tc["id"]
-            raw_args = tc["function"].get("arguments") or "{}"
-            try:
-                args = json.loads(raw_args) if raw_args.strip() else {}
-                if not isinstance(args, dict):
-                    raise ValueError("arguments must be a JSON object")
-            except (json.JSONDecodeError, ValueError, TypeError):
-                messages.append(
-                    _tool_message(
-                        f"ERROR: arguments for '{name}' were not a valid JSON object.",
-                        tc_id,
-                        name,
-                    )
-                )
-                continue
+        signal: CancellationToken,
+    ) -> AsyncIterator[AgentEvent]:
+        """Execute one tool call, appending its result and emitting its events.
 
-            tool = self.tool_router.get(name)
-            if (
-                tool is not None
-                and tool.requires_approval
-                and not self._approve(name, args, auto_approve, console)
-            ):
-                messages.append(
-                    _tool_message(
-                        f"Tool '{name}' was not approved by the user; it was skipped.",
-                        tc_id,
-                        name,
-                    )
-                )
-                continue
+        Order of gates: argument parsing → approval → cancellation →
+        ``before_tool_call`` → the tool itself. ``after_tool_call`` then sees every
+        outcome, including blocked and failed ones, so a policy can rewrite results
+        uniformly.
+        """
+        name = call["function"]["name"]
+        call_id = call["id"]
+        raw_args = call["function"].get("arguments") or "{}"
 
-            if stream and console is not None:
-                console.print(f"[dim]→ {name}({_short(args)})[/dim]")
-            output, success = await self.tool_router.call_tool(
-                name, args, tool_call_id=tc_id
+        try:
+            args = json.loads(raw_args) if raw_args.strip() else {}
+            if not isinstance(args, dict):
+                raise ValueError("arguments must be a JSON object")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            args = {}
+            yield ToolExecutionStartEvent(
+                tool_call_id=call_id, tool_name=name, args=args
             )
-            messages.append(_tool_message(output, tc_id, name))
-            if stream and console is not None:
-                tag = "ok" if success else "error"
-                console.print(f"[dim]  {tag}: {_short(output)}[/dim]")
+            for event in self._finish_tool_call(
+                call_id,
+                name,
+                ToolResult.error(
+                    f"ERROR: arguments for '{name}' were not a valid JSON object."
+                ),
+            ):
+                yield event
+            return
 
-    def _approve(
-        self, name: str, args: dict, auto_approve: bool | None, console: Any
-    ) -> bool:
+        yield ToolExecutionStartEvent(tool_call_id=call_id, tool_name=name, args=args)
+        invocation = ToolInvocation(tool_call_id=call_id, name=name, arguments=args)
+
+        result: ToolResult | None = None
+        tool = self.tool_router.get(name)
+        if (
+            tool is not None
+            and tool.requires_approval
+            and not self._approve(name, args, auto_approve)
+        ):
+            result = ToolResult.error(
+                f"Tool '{name}' was not approved by the user; it was skipped."
+            )
+        elif signal.is_cancelled():
+            result = ToolResult.error(INTERRUPTED_TOOL_RESULT)
+        elif self.before_tool_call is not None:
+            blocked, reason = await _maybe_await(self.before_tool_call(invocation))
+            if blocked:
+                result = ToolResult.error(
+                    reason or f"Tool '{name}' was blocked before execution."
+                )
+
+        if result is None:
+            async for event, finished in self._run_tool_with_progress(
+                invocation, signal
+            ):
+                if event is not None:
+                    yield event
+                else:
+                    result = finished
+
+        assert result is not None  # every branch above produces one
+        if self.after_tool_call is not None:
+            result = ToolResult.coerce(
+                await _maybe_await(self.after_tool_call(invocation, result))
+            )
+
+        for event in self._finish_tool_call(call_id, name, result):
+            yield event
+
+    async def _run_tool_with_progress(
+        self, invocation: ToolInvocation, signal: CancellationToken
+    ) -> AsyncIterator[tuple[AgentEvent | None, ToolResult | None]]:
+        """Run a tool, surfacing its ``on_update`` reports as events while it works.
+
+        The tool runs as a task while this generator drains a queue the progress
+        callback writes to, so a long-running tool's output reaches subscribers live
+        instead of arriving in a batch once it returns.
+
+        Yields:
+            tuple[AgentEvent | None, ToolResult | None]: ``(event, None)`` per progress
+                report, then ``(None, result)`` exactly once at the end.
+        """
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def on_update(partial: Any) -> None:
+            # Called from inside the tool, possibly from another thread.
+            loop.call_soon_threadsafe(queue.put_nowait, partial)
+
+        task = asyncio.ensure_future(
+            self.tool_router.call_tool(
+                invocation.name,
+                invocation.arguments,
+                tool_call_id=invocation.tool_call_id,
+                signal=signal,
+                on_update=on_update,
+            )
+        )
+
+        while True:
+            drain = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait(
+                {task, drain}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if drain in done:
+                partial = ToolResult.coerce(drain.result())
+                yield (
+                    ToolExecutionUpdateEvent(
+                        tool_call_id=invocation.tool_call_id,
+                        tool_name=invocation.name,
+                        output=partial.model_text(),
+                        details=partial.details,
+                    ),
+                    None,
+                )
+                continue
+            drain.cancel()
+            break
+
+        # Flush anything reported between the last drain and the tool returning.
+        while not queue.empty():
+            partial = ToolResult.coerce(queue.get_nowait())
+            yield (
+                ToolExecutionUpdateEvent(
+                    tool_call_id=invocation.tool_call_id,
+                    tool_name=invocation.name,
+                    output=partial.model_text(),
+                    details=partial.details,
+                ),
+                None,
+            )
+        yield (None, await task)
+
+    def _finish_tool_call(
+        self, call_id: str, name: str, result: ToolResult
+    ) -> list[AgentEvent]:
+        """Emit the end-of-execution event and append the resulting message(s).
+
+        Any tools the result unlocks are activated here, so they appear in the schemas
+        sent on the very next turn. Images become a follow-up user message, since the
+        Chat Completions tool-result slot is text-only.
+        """
+        activated = (
+            self.tool_router.activate(*result.added_tool_names)
+            if result.added_tool_names
+            else []
+        )
+        events: list[AgentEvent] = [
+            ToolExecutionEndEvent(
+                tool_call_id=call_id,
+                tool_name=name,
+                output=result.model_text(),
+                is_error=result.is_error,
+                details=result.details,
+                added_tool_names=activated,
+                terminate=result.terminate,
+            )
+        ]
+        events.extend(
+            self._add_message(
+                _tool_message(
+                    result.model_text(), call_id, name, is_error=result.is_error
+                )
+            )
+        )
+        followup = image_followup_message(result, name)
+        if followup is not None:
+            events.extend(self._add_message(followup))
+        return events
+
+    def _approve(self, name: str, args: dict, auto_approve: bool | None) -> bool:
         """Decide whether a tool requiring approval may run.
 
         Resolution order: explicit ``auto_approve`` / ``yolo_mode`` →
@@ -369,7 +1199,6 @@ class ReactAgent:
             name (str): The tool name awaiting approval.
             args (dict): The parsed arguments the tool would be called with.
             auto_approve (bool | None): Per-run override of ``yolo_mode``.
-            console (Any): Optional Rich console for the interactive prompt.
 
         Returns:
             bool: True to execute the tool, False to skip it.
@@ -390,9 +1219,8 @@ class ReactAgent:
             from rich.prompt import Confirm
 
             return Confirm.ask(
-                f"Approve tool '{name}' with args {_short(args)}?",
+                f"Approve tool '{name}' with args {short_text(args)}?",
                 default=False,
-                console=console,
             )
         except Exception:  # noqa: BLE001
             return False
@@ -400,47 +1228,84 @@ class ReactAgent:
     # ----------------------------------------------------------------------- #
     # LLM call (with retry) — streaming + non-streaming
     # ----------------------------------------------------------------------- #
-    async def _call_llm(
-        self, messages: list[dict], tools: list[dict] | None, stream: bool, console: Any
-    ) -> LLMResult:
-        """Call the model (with transient-error retries) and normalise the response."""
-        response = await self._acompletion_with_retry(messages, tools, stream)
-        if stream:
-            return self._record(await self._consume_stream(response, console))
-        return self._record(self._parse_response(response))
+    async def _assistant_events(
+        self,
+        outcome: dict[str, Any],
+        provider_stream: bool,
+        signal: CancellationToken,
+    ) -> AsyncIterator[AgentEvent]:
+        """Call the model, append the assistant message, and emit its events.
 
-    def _record(self, pair: tuple[LLMResult, Any]) -> LLMResult:
-        """Fold a call's raw usage into the model's cumulative totals."""
-        result, raw_usage = pair
-        result.usage = self.model.record_usage(raw_usage)
-        return result
-
-    async def _acompletion_with_retry(
-        self, messages: list[dict], tools: list[dict] | None, stream: bool
-    ) -> Any:
-        """Call ``model.acompletion`` with transient-error retries and backoff.
-
-        Raises:
-            Exception: Re-raised once retries are exhausted or for non-retryable errors.
+        Args:
+            outcome (dict): Filled with ``message`` (the appended assistant message)
+                and ``finish_reason`` before the generator ends.
+            provider_stream (bool): Whether to request a streaming completion.
+            signal (CancellationToken): Polled between chunks so a cancelled run stops
+                consuming the stream promptly.
         """
+        partial: dict[str, Any] = {"role": "assistant", "content": ""}
+        yield MessageStartEvent(message=dict(partial))
+
+        result: LLMResult | None = None
+        raw_usage: Any = None
         for attempt in range(_MAX_LLM_RETRIES):
+            accumulator = _StreamAccumulator()
             try:
-                return await self.model.acompletion(
-                    messages=messages, tools=tools, stream=stream
+                response = await self.model.acompletion(
+                    messages=self._provider_messages(),
+                    tools=self._tool_specs(),
+                    stream=provider_stream,
                 )
+                if not provider_stream:
+                    result, raw_usage = self._parse_response(response)
+                    break
+
+                async for chunk in response:
+                    if signal.is_cancelled():
+                        break
+                    text, reasoning = accumulator.consume(chunk)
+                    if text or reasoning:
+                        partial["content"] = accumulator.content
+                        yield MessageUpdateEvent(
+                            delta=text,
+                            reasoning_delta=reasoning,
+                            message=dict(partial),
+                        )
+                result, raw_usage = accumulator.finish()
+                break
             except Exception as e:  # noqa: BLE001
+                # A stream that already produced output cannot be retried: the deltas
+                # are gone and re-issuing would duplicate them.
+                if accumulator.received:
+                    raise
                 delay = _retry_delay_for(e, attempt)
-                if attempt < _MAX_LLM_RETRIES - 1 and delay is not None:
-                    logger.warning(
-                        "Transient LLM error (attempt %d): %s — retrying in %ds",
-                        attempt + 1,
-                        e,
-                        delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                raise
-        raise RuntimeError("unreachable")
+                if attempt >= _MAX_LLM_RETRIES - 1 or delay is None:
+                    raise
+                logger.warning(
+                    "Transient LLM error (attempt %d): %s — retrying in %ds",
+                    attempt + 1,
+                    e,
+                    delay,
+                )
+                yield RetryEvent(
+                    attempt=attempt + 2,
+                    max_attempts=_MAX_LLM_RETRIES,
+                    delay_seconds=float(delay),
+                    reason=str(e),
+                )
+                if not await _sleep_unless_cancelled(delay, signal):
+                    raise
+
+        assert result is not None  # the loop either breaks with a result or raises
+        result.usage = self.model.record_usage(raw_usage)
+        if not self.preserve_reasoning:
+            result.reasoning_content = None
+            result.thinking_blocks = None
+        message = result.to_message()
+        self._append(message)
+        outcome["message"] = message
+        outcome["finish_reason"] = result.finish_reason
+        yield MessageEndEvent(message=message)
 
     @staticmethod
     def _parse_response(response: Any) -> tuple[LLMResult, Any]:
@@ -449,6 +1314,7 @@ class ReactAgent:
         message = choice.message
         content = message.content or None
         finish_reason = choice.finish_reason
+        reasoning_content, thinking_blocks = extract_reasoning(message)
 
         tool_calls_acc: dict[int, dict] = {}
         if getattr(message, "tool_calls", None):
@@ -461,53 +1327,114 @@ class ReactAgent:
                         "arguments": tc.function.arguments,
                     },
                 }
-        result = LLMResult(content, tool_calls_acc, finish_reason)
+        result = LLMResult(
+            content,
+            tool_calls_acc,
+            finish_reason,
+            reasoning_content=reasoning_content,
+            thinking_blocks=thinking_blocks,
+        )
         return result, getattr(response, "usage", None)
 
-    @staticmethod
-    async def _consume_stream(response: Any, console: Any) -> tuple[LLMResult, Any]:
-        """Drain a streaming response, accumulating content + tool calls.
 
-        Prints assistant text deltas to ``console`` as they arrive. Returns the
-        normalised result paired with the final usage object (if the provider sent one).
+async def _sleep_unless_cancelled(
+    delay: float, signal: CancellationToken | None
+) -> bool:
+    """Sleep in short steps, returning False as soon as cancellation is requested."""
+    remaining = float(delay)
+    while remaining > 0:
+        if signal is not None and signal.is_cancelled():
+            return False
+        step = min(1.0, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
+    return signal is None or not signal.is_cancelled()
+
+
+class _StreamAccumulator:
+    """Reassembles a streaming completion chunk by chunk.
+
+    Kept separate from the event-emitting generator so the (fiddly) delta-merging
+    logic stays testable on its own and a cancelled stream still yields whatever
+    arrived before the interruption.
+    """
+
+    def __init__(self) -> None:
+        self._content_parts: list[str] = []
+        self._reasoning_parts: list[str] = []
+        self._thinking_blocks: list = []
+        self._tool_calls: dict[int, dict] = {}
+        self._finish_reason: str | None = None
+        self._usage: Any = None
+        self.received = False
+
+    @property
+    def content(self) -> str:
+        """The assistant text received so far."""
+        return "".join(self._content_parts)
+
+    def consume(self, chunk: Any) -> tuple[str, str]:
+        """Merge one chunk and return its ``(text_delta, reasoning_delta)``.
+
+        Either may be empty; a chunk carrying only tool-call fragments returns both
+        empty but still marks the stream as having produced output.
         """
-        full_content = ""
-        tool_calls_acc: dict[int, dict] = {}
-        finish_reason: str | None = None
-        final_usage = None
+        if getattr(chunk, "usage", None):
+            self._usage = chunk.usage
+        choice = chunk.choices[0] if getattr(chunk, "choices", None) else None
+        if choice is None:
+            return "", ""
 
-        async for chunk in response:
-            choice = chunk.choices[0] if getattr(chunk, "choices", None) else None
-            if choice is None:
-                if getattr(chunk, "usage", None):
-                    final_usage = chunk.usage
-                continue
-            delta = choice.delta
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            if getattr(delta, "content", None):
-                full_content += delta.content
-                if console is not None:
-                    console.print(delta.content, end="", markup=False, highlight=False)
-            if getattr(delta, "tool_calls", None):
-                for tc_delta in delta.tool_calls:
-                    slot = tool_calls_acc.setdefault(
-                        tc_delta.index,
-                        {
-                            "id": "",
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        },
-                    )
-                    if tc_delta.id:
-                        slot["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            slot["function"]["name"] += tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            slot["function"]["arguments"] += tc_delta.function.arguments
-            if getattr(chunk, "usage", None):
-                final_usage = chunk.usage
+        delta = choice.delta
+        if choice.finish_reason:
+            self._finish_reason = choice.finish_reason
 
-        result = LLMResult(full_content or None, tool_calls_acc, finish_reason)
-        return result, final_usage
+        text = getattr(delta, "content", None) or ""
+        if text:
+            self._content_parts.append(text)
+            self.received = True
+
+        reasoning, blocks = extract_reasoning(delta)
+        if reasoning:
+            self._reasoning_parts.append(reasoning)
+            self.received = True
+        if blocks:
+            self._thinking_blocks.extend(blocks)
+            self.received = True
+
+        for tc_delta in getattr(delta, "tool_calls", None) or []:
+            self.received = True
+            slot = self._tool_calls.setdefault(
+                tc_delta.index,
+                {
+                    "id": "",
+                    "type": "function",
+                    "function": {"name": "", "arguments": ""},
+                },
+            )
+            if tc_delta.id:
+                slot["id"] = tc_delta.id
+            if tc_delta.function:
+                if tc_delta.function.name:
+                    slot["function"]["name"] += tc_delta.function.name
+                if tc_delta.function.arguments:
+                    slot["function"]["arguments"] += tc_delta.function.arguments
+        return text, reasoning or ""
+
+    def finish(self) -> tuple[LLMResult, Any]:
+        """Return the normalised ``(LLMResult, raw_usage)`` for the stream."""
+        return (
+            LLMResult(
+                self.content or None,
+                self._tool_calls,
+                self._finish_reason,
+                reasoning_content="".join(self._reasoning_parts) or None,
+                thinking_blocks=self._thinking_blocks or None,
+            ),
+            self._usage,
+        )
+
+
+async def _maybe_await(value: Any) -> Any:
+    """Await ``value`` when it is awaitable, so hooks may be sync or async."""
+    return await value if isawaitable(value) else value
