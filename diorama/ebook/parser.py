@@ -45,6 +45,18 @@ def _basename(href: str) -> str:
     return href.split("/")[-1]
 
 
+def _is_document_item(item: Any) -> bool:
+    """True for spine items that are HTML/XHTML documents.
+
+    Prefers ebooklib's own classification (``ITEM_DOCUMENT``), but also accepts
+    items whose manifest ``media-type`` is the non-conformant ``text/html`` —
+    common in Internet-Archive-generated EPUBs — which ebooklib otherwise
+    leaves as ``ITEM_UNKNOWN`` since it has no extension mapped to
+    ``ITEM_DOCUMENT``.
+    """
+    return item.get_type() == ebooklib.ITEM_DOCUMENT or item.media_type == "text/html"
+
+
 @dataclass
 class EbookContext:
     """Parsed EPUB: metadata, flattened blocks, and the book's own table of contents.
@@ -136,7 +148,7 @@ class EbookContext:
 
         for spine_index, (item_id, _linear) in enumerate(book.spine):
             item = book.get_item_with_id(item_id)
-            if item is None or item.get_type() != ebooklib.ITEM_DOCUMENT:
+            if item is None or not _is_document_item(item):
                 continue
             name = item.get_name()
             soup = BeautifulSoup(item.get_content(), "html.parser")
