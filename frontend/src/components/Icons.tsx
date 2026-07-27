@@ -168,6 +168,40 @@ export function SparkIcon(props: IconProps) {
   );
 }
 
+/** Sliders rather than a cog — closer in weight to the hairline rules around it. */
+export function SettingsIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 7h9M17 7h3M4 17h3M11 17h9" />
+      <circle cx="15" cy="7" r="2.2" />
+      <circle cx="9" cy="17" r="2.2" />
+    </Icon>
+  );
+}
+
+export function KeyIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="8" cy="12" r="4" />
+      <path d="M12 12h8M17 12v3M20 12v2.5" />
+    </Icon>
+  );
+}
+
+/**
+ * Ledger bars rather than a coin or a currency glyph: the dashboard is about how
+ * spend is distributed, and a $ sign would also read as US-specific chrome in a UI
+ * that is otherwise unlabelled.
+ */
+export function CostsIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 20h16" />
+      <path d="M6.5 20v-6M11.5 20V8M16.5 20v-9" />
+    </Icon>
+  );
+}
+
 export function ImageIcon(props: IconProps) {
   return (
     <Icon {...props}>

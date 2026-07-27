@@ -21,6 +21,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from diorama.models.usage import call_timer, utc_now_iso
+
 logger = logging.getLogger(__name__)
 
 CHARS_PER_TOKEN = 4
@@ -477,8 +479,13 @@ class ContextCompactor:
         """Run the summarisation completion and return its text.
 
         The call sends no tools and does not stream, so it cannot recurse into the
-        agent loop. Its usage is folded into the model's cumulative totals.
+        agent loop. Its usage is folded into the model's cumulative totals, and it is
+        recorded as its own ``kind="compaction"`` ledger row — compaction is a real
+        charge that would otherwise hide inside the turn totals, and knowing what it
+        costs is the whole point of a per-call ledger.
         """
+        started_at = utc_now_iso()
+        elapsed = call_timer()
         response = await self.model.acompletion(
             messages=[
                 {"role": "system", "content": SUMMARIZATION_SYSTEM_PROMPT},
@@ -492,7 +499,15 @@ class ContextCompactor:
             tools=None,
             stream=False,
         )
-        self.model.record_usage(getattr(response, "usage", None))
+        self.model.record_usage(
+            getattr(response, "usage", None),
+            response=response,
+            context={
+                "kind": "compaction",
+                "started_at": started_at,
+                "duration_ms": elapsed(),
+            },
+        )
         content = response.choices[0].message.content
         if not content or not content.strip():
             raise ValueError("summarizer returned empty content")

@@ -3,11 +3,20 @@
 Diorama talks to every model through litellm (OpenRouter by default), per the
 project's locked architecture. This class is intentionally thin: it issues the
 ``acompletion`` call and keeps cumulative token/cost accounting.
+
+It is also the one place *every* LLM call in the app passes through — the agent
+loop's turns and the context compactor's summarisation calls alike — which makes
+:meth:`LiteLLMModel.record_usage` the natural (and only) instrumentation point for
+per-call cost tracking. When a ``usage_sink`` is installed, each call emits a fully
+priced :class:`~diorama.models.usage.LLMCallRecord` to it. With no sink installed
+nothing changes and nothing is stored, so the core framework stays free of any
+persistence concern; the backend supplies a sink that appends to a per-book ledger.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Callable
 
 import litellm
 import weave
@@ -15,6 +24,15 @@ from pydantic import BaseModel, Field
 
 from diorama.models.pricing import PricingTable
 from diorama.models.prompt_cache import apply_prompt_caching, extract_cache_tokens
+from diorama.models.usage import (
+    LLMCallRecord,
+    extract_provider,
+    extract_route,
+    split_model_id,
+    utc_now_iso,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _cost_model_candidates(model_id: str) -> list[str]:
@@ -127,6 +145,10 @@ class LiteLLMModel(BaseModel):
         temperature (float): Sampling temperature passed to the provider. Defaults to 0.7.
         max_tokens (int | None): Maximum completion tokens; None lets the provider decide.
         api_base (str | None): Override the provider base URL (e.g. for local inference).
+        api_key (str | None): Provider credential. None falls back to litellm's own
+            environment lookup (``OPENROUTER_API_KEY`` and friends), which is the
+            path every call took before the settings page existed. Excluded from
+            ``repr`` so the key doesn't surface in logs or tracebacks.
         timeout (int): Request timeout in seconds. Defaults to 600.
         enable_prompt_caching (bool): Whether to inject Anthropic cache breakpoints. Defaults to True.
         reasoning_effort (str | None): Request extended thinking from reasoning-capable
@@ -134,15 +156,29 @@ class LiteLLMModel(BaseModel):
             this to each provider's native control (e.g. an Anthropic thinking budget).
             None leaves the provider default.
         cumulative (dict[str, float]): Accumulated token and cost counters across all calls.
+        usage_sink (Callable | None): Receives one :class:`LLMCallRecord` per call, for
+            durable cost tracking. None (the default) records nothing beyond
+            ``cumulative``, which is exactly how the model behaved before the cost
+            dashboard existed. Excluded from serialisation — it is wiring, not config.
+        usage_labels (dict[str, Any]): Run-level provenance stamped onto every emitted
+            record (``run_id``, ``book_id``, ``agent_id``). Set once by whoever owns the
+            run; per-call fields like the turn number are passed to
+            :meth:`record_usage` instead, since they change call to call.
     """
 
     model_id: str
     temperature: float = 0.7
     max_tokens: int | None = None
     api_base: str | None = None
+    api_key: str | None = Field(default=None, repr=False, exclude=True)
     timeout: int = 600
     enable_prompt_caching: bool = True
     reasoning_effort: str | None = None
+
+    usage_sink: Callable[[LLMCallRecord], None] | None = Field(
+        default=None, repr=False, exclude=True
+    )
+    usage_labels: dict[str, Any] = Field(default_factory=dict, repr=False, exclude=True)
 
     cumulative: dict[str, float] = Field(
         default_factory=lambda: {
@@ -199,6 +235,8 @@ class LiteLLMModel(BaseModel):
             kwargs["max_tokens"] = self.max_tokens
         if self.api_base:
             kwargs["api_base"] = self.api_base
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
         if self.reasoning_effort:
             kwargs["reasoning_effort"] = self.reasoning_effort
         if stream:
@@ -237,11 +275,20 @@ class LiteLLMModel(BaseModel):
         cache_read: int,
         cache_write: int,
         reasoning: int,
-    ) -> tuple[float, dict[str, float]]:
-        """Estimate (total_cost, cost_by_type) for one call.
+    ) -> tuple[float, dict[str, float], str]:
+        """Estimate (total_cost, cost_by_type, pricing_source) for one call.
 
-        Prefers the live OpenRouter pricing table (per token type); falls back to
-        litellm's flat prompt/completion pricing when the table isn't available.
+        Rate tables are tried in descending order of fidelity, and which one answered
+        is returned alongside the number rather than thrown away — a dashboard that
+        cannot say *how* a figure was arrived at invites the reader to trust a flat
+        litellm guess exactly as much as a live per-token-type rate.
+
+        1. The live OpenRouter table, which prices each token type separately (cache
+           reads are far cheaper than fresh prompt tokens, cache writes dearer).
+        2. litellm's static flat prompt/completion pricing.
+
+        A direct-provider rate table would slot in as a step of its own here, keyed on
+        ``route``; nothing above this method assumes OpenRouter is the only payer.
 
         Args:
             prompt_tokens (int): Number of non-cached input tokens.
@@ -251,8 +298,9 @@ class LiteLLMModel(BaseModel):
             reasoning (int): Number of reasoning/thinking tokens.
 
         Returns:
-            tuple[float, dict[str, float]]: A ``(total_cost, cost_by_type)`` pair
-                where ``cost_by_type`` maps token-type labels to their USD cost.
+            tuple[float, dict[str, float], str]: The total estimate, the per-token-type
+                cost split, and the :data:`~diorama.models.usage.PricingSource` that
+                produced them.
         """
         pricing = PricingTable.instance().get(self.model_id)
         if pricing is not None:
@@ -263,25 +311,49 @@ class LiteLLMModel(BaseModel):
                 cache_write_tokens=cache_write,
                 reasoning_tokens=reasoning,
             )
-            return sum(breakdown.values()), breakdown
+            return sum(breakdown.values()), breakdown, "openrouter_live"
         # Fallback: litellm flat pricing, attributed to prompt/completion.
         flat = self.cost_for(prompt_tokens, completion_tokens)
-        return flat, {"prompt": 0.0, "completion": flat, "request": 0.0}
+        source = "litellm_static" if flat else "unpriced"
+        return flat, {"prompt": 0.0, "completion": flat, "request": 0.0}, source
 
-    def record_usage(self, usage: Any) -> dict[str, float]:
+    def record_usage(
+        self,
+        usage: Any,
+        *,
+        response: Any = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Fold one call's usage into the cumulative totals; return that call's slice.
 
         Computes a per-token-type estimate from the OpenRouter pricing table and,
         when OpenRouter reports the real cost, reconciles the breakdown to it (the
         components are scaled so they sum to the actual charge). ``cost_usd`` is
         the authoritative figure (reconciled where known, else estimated).
+
+        When a ``usage_sink`` is installed, this also emits one
+        :class:`~diorama.models.usage.LLMCallRecord` — the durable ledger row behind
+        the cost dashboard.
+
+        Args:
+            usage (Any): The provider's usage payload (object or dict), or None.
+            response (Any): The full litellm response or a representative stream chunk.
+                Carries the route and upstream-provider provenance that ``usage`` alone
+                does not, so passing it is what makes per-provider attribution possible.
+            context (dict[str, Any] | None): Per-call provenance for the emitted record —
+                ``kind``, ``turn``, ``attempt``, ``duration_ms``, ``streamed``,
+                ``finish_reason``, and an optional pre-extracted ``provider`` (needed for
+                streaming, where the provider is read off a chunk rather than a response).
+
+        Returns:
+            dict[str, Any]: This call's token counts, costs, and cost split.
         """
         prompt_tokens, completion_tokens = _extract_token_counts(usage)
         cache_read, cache_write = extract_cache_tokens(usage)
         reasoning = _extract_reasoning_tokens(usage)
         actual_cost = _extract_actual_cost(usage)
 
-        estimated, cost_by_type = self._price_call(
+        estimated, cost_by_type, pricing_source = self._price_call(
             prompt_tokens, completion_tokens, cache_read, cache_write, reasoning
         )
 
@@ -291,6 +363,7 @@ class LiteLLMModel(BaseModel):
             cost_by_type = {k: v * factor for k, v in cost_by_type.items()}
         elif actual_cost is not None and estimated == 0:
             cost_by_type = {**cost_by_type, "completion": actual_cost}
+            pricing_source = "actual"
 
         cost = actual_cost if actual_cost is not None else estimated
 
@@ -301,7 +374,8 @@ class LiteLLMModel(BaseModel):
         self.cumulative["cache_read_tokens"] += cache_read
         self.cumulative["cache_write_tokens"] += cache_write
         self.cumulative["reasoning_tokens"] += reasoning
-        return {
+
+        slice_ = {
             "input_tokens": prompt_tokens,
             "output_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
@@ -313,3 +387,90 @@ class LiteLLMModel(BaseModel):
             "reasoning_tokens": reasoning,
             "cost_by_type": cost_by_type,
         }
+
+        ctx = dict(context or {})
+        self._emit(
+            LLMCallRecord(
+                **self._record_identity(response, ctx),
+                kind=ctx.get("kind", "turn"),
+                status=ctx.get("status", "ok"),
+                turn=ctx.get("turn"),
+                attempt=int(ctx.get("attempt", 1)),
+                started_at=ctx.get("started_at") or utc_now_iso(),
+                duration_ms=ctx.get("duration_ms"),
+                streamed=bool(ctx.get("streamed", False)),
+                finish_reason=ctx.get("finish_reason"),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+                reasoning_tokens=reasoning,
+                cost_usd=cost,
+                estimated_cost_usd=estimated,
+                actual_cost_usd=actual_cost,
+                cost_by_type=cost_by_type,
+                pricing_source=pricing_source,
+            )
+        )
+        return slice_
+
+    def record_failure(
+        self, error: BaseException | str, *, context: dict[str, Any] | None = None
+    ) -> None:
+        """Emit a ledger row for a call that failed, with no usage to account for.
+
+        A failed attempt usually costs nothing, so it never touches ``cumulative``. It
+        is still recorded, because a call table that silently omits the three attempts
+        before a success misrepresents both what the provider saw and how long the run
+        really took.
+
+        Args:
+            error (BaseException | str): The failure, rendered into the record's
+                ``error`` field.
+            context (dict[str, Any] | None): Same per-call provenance as
+                :meth:`record_usage`. ``status`` defaults to ``"error"``; pass
+                ``"retry"`` for an attempt that is about to be re-issued.
+        """
+        ctx = dict(context or {})
+        self._emit(
+            LLMCallRecord(
+                **self._record_identity(ctx.get("response"), ctx),
+                kind=ctx.get("kind", "turn"),
+                status=ctx.get("status", "error"),
+                turn=ctx.get("turn"),
+                attempt=int(ctx.get("attempt", 1)),
+                started_at=ctx.get("started_at") or utc_now_iso(),
+                duration_ms=ctx.get("duration_ms"),
+                streamed=bool(ctx.get("streamed", False)),
+                error=str(error)[:500] or error.__class__.__name__,
+            )
+        )
+
+    def _record_identity(self, response: Any, ctx: dict[str, Any]) -> dict[str, Any]:
+        """The run-level and model-level fields shared by every emitted record."""
+        _, _, bare_model = split_model_id(self.model_id)
+        return {
+            "run_id": self.usage_labels.get("run_id"),
+            "book_id": self.usage_labels.get("book_id"),
+            "agent_id": self.usage_labels.get("agent_id"),
+            "model_id": self.model_id,
+            "model": bare_model,
+            "route": extract_route(self.model_id, response),
+            "provider": ctx.get("provider")
+            or extract_provider(self.model_id, response),
+        }
+
+    def _emit(self, record: LLMCallRecord) -> None:
+        """Hand a finished record to the sink, if one is installed.
+
+        Deliberately swallows sink failures: cost tracking is observability, and a
+        full disk or an unwritable ledger must never take down a book that is
+        otherwise processing fine.
+        """
+        if self.usage_sink is None:
+            return
+        try:
+            self.usage_sink(record)
+        except Exception:  # noqa: BLE001 — never let bookkeeping break a run
+            logger.warning("Usage sink rejected a call record", exc_info=True)

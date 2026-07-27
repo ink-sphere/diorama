@@ -34,6 +34,12 @@ from diorama.ebook.models import EbookStructure
 from diorama.ebook.parser import EbookContext
 from diorama.ebook.slicer import DEFAULT_SEGMENT_LENGTH, build_structure, validate_tree
 from diorama.models.litellm_model import LiteLLMModel
+from diorama.models.usage import UsageSink, new_run_id
+
+#: This agent's key in the settings registry (:data:`diorama.backend.settings.AGENTS`)
+#: and in every ledger row it produces. Defined here rather than imported from the
+#: backend so the agent package keeps not depending on the web layer.
+AGENT_ID = "ebook_loader"
 
 _MAX_READ_BLOCKS = 300
 _PREVIEW_CHARS = 200
@@ -420,12 +426,16 @@ class EbookLoaderAgent:
         *,
         model: LiteLLMModel | None = None,
         model_id: str | None = None,
+        api_key: str | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
         max_iterations: int | None = 60,
         instructions: str | None = None,
         enable_prompt_caching: bool = True,
         weave_project: str | None = None,
+        usage_sink: UsageSink | None = None,
+        book_id: str | None = None,
+        run_id: str | None = None,
     ) -> None:
         """Configure the agent used by every subsequent :meth:`load` call.
 
@@ -437,6 +447,8 @@ class EbookLoaderAgent:
                 :class:`LiteLLMModel` from. Defaults to
                 :class:`~diorama.core.react.ReactAgent`'s own default model when
                 both this and ``model`` are None.
+            api_key (str | None): Provider credential, when building the model.
+                None leaves litellm to read it from the environment.
             temperature (float): Sampling temperature, when building the model.
             max_tokens (int | None): Completion token cap, when building the model.
             max_iterations (int | None): Turn ceiling per ``load()`` call. EPUB
@@ -445,9 +457,21 @@ class EbookLoaderAgent:
                 ``EBOOK_LOADER_INSTRUCTIONS``.
             enable_prompt_caching (bool): Pass-through to the model wrapper.
             weave_project (str | None): When set, initialise W&B Weave tracing.
+            usage_sink (UsageSink | None): Receives one
+                :class:`~diorama.models.usage.LLMCallRecord` per LLM call — every agent
+                turn plus every context-compaction summary. None (the default) records
+                nothing, which is what a script or a test that doesn't care about cost
+                wants; the backend installs a sink that appends to the book's ledger.
+            book_id (str | None): Stamped onto every emitted record, so the ledger rows
+                can be attributed to a book on the shelf.
+            run_id (str | None): Stamped onto every emitted record, grouping the calls
+                of one run. A reprocessed book accumulates a second run in the same
+                ledger rather than overwriting the first, so the cost of a retry is
+                visible instead of silently replacing what it cost the first time.
         """
         self._model = model
         self._model_id = model_id
+        self._api_key = api_key
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_iterations = max_iterations
@@ -456,6 +480,12 @@ class EbookLoaderAgent:
         )
         self._enable_prompt_caching = enable_prompt_caching
         self._weave_project = weave_project
+        self._usage_sink = usage_sink
+        self._usage_labels: dict[str, Any] = {
+            "book_id": book_id,
+            "run_id": run_id or new_run_id(),
+            "agent_id": AGENT_ID,
+        }
 
     def _build_agent(
         self, epub_path: str | Path, *, max_segment_length: int | None
@@ -468,13 +498,19 @@ class EbookLoaderAgent:
         # Built explicitly (rather than left to ReactAgent) so the same instance can
         # be handed to both the agent and the compactor below — the compactor's
         # summarisation calls then fold into the same cumulative usage/cost totals
-        # the run reports on the returned structure.
+        # the run reports on the returned structure, and reach the same usage sink.
         model = self._model or LiteLLMModel(
             model_id=self._model_id or _DEFAULT_MODEL_ID,
+            api_key=self._api_key,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             enable_prompt_caching=self._enable_prompt_caching,
         )
+        # Attached here rather than at construction so a caller-supplied ``model``
+        # (a test fake, a shared instance) is instrumented too.
+        if self._usage_sink is not None:
+            model.usage_sink = self._usage_sink
+            model.usage_labels = dict(self._usage_labels)
         compactor = ContextCompactor(model, reserve_tokens=_COMPACTION_RESERVE_TOKENS)
 
         agent = ReactAgent(

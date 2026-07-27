@@ -11,28 +11,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from datetime import datetime, timezone
 
 from diorama.agents.ebook_loader import EbookLoaderAgent, EbookLoaderError
 from diorama.backend.models import Coverage, TraceLine
+from diorama.backend.settings import resolve_agent_runtime
 from diorama.backend.store import get_book, structure_path, upload_path, upsert_book
 from diorama.backend.trace import event_to_trace_line
+from diorama.backend.usage_store import make_sink, run_cost
+from diorama.models.usage import new_run_id
 
 logger = logging.getLogger("diorama.backend")
 
-_DEFAULT_LOADER_MODEL_ID = "openrouter/openai/gpt-4o-mini"
-
-
-def _loader_model_id() -> str:
-    """The litellm model id to run EbookLoaderAgent with.
-
-    Read from ``DIORAMA_LOADER_MODEL_ID`` (looked up per run, not cached at import
-    time, so a ``.env`` reload or a changed environment takes effect without
-    restarting the process) with the previous hardcoded default as a fallback.
-    """
-    return os.environ.get("DIORAMA_LOADER_MODEL_ID", _DEFAULT_LOADER_MODEL_ID)
+#: The settings-registry key for the agent this module runs.
+LOADER_AGENT_ID = "ebook_loader"
 
 
 def _user_facing_error(exc: Exception) -> str:
@@ -107,7 +100,21 @@ async def _run_book(book_id: str, run: _BookRun) -> None:
     book.status = "processing"
     await upsert_book(book)
 
-    loader = EbookLoaderAgent(model_id=_loader_model_id())
+    # Resolved per run (settings → env → default), so changing the model or key on
+    # the settings page takes effect on the next book without a server restart.
+    model_id, api_key = await resolve_agent_runtime(LOADER_AGENT_ID)
+    # Every LLM call this run makes is appended to the book's cost ledger as it
+    # completes — so a run that fails halfway still leaves an accurate account of what
+    # it spent getting there, and a retry appends a second run rather than erasing the
+    # first. The failure path below deliberately doesn't clean any of it up.
+    run_id = new_run_id()
+    loader = EbookLoaderAgent(
+        model_id=model_id,
+        api_key=api_key,
+        usage_sink=make_sink(book_id),
+        book_id=book_id,
+        run_id=run_id,
+    )
     epub_path = upload_path(book_id)
     try:
         events, finalize = loader.stream_load(epub_path)
@@ -122,6 +129,11 @@ async def _run_book(book_id: str, run: _BookRun) -> None:
         book.status = "failed"
         book.error = message
         book.finished_at = _now_iso()
+        # A run that died still spent money getting there. The agent raised before
+        # its cumulative totals could be read, but the ledger already has every call
+        # it made — so read the cost back from there rather than leaving the card
+        # blank, which would read as "this cost nothing".
+        book.cost_usd = run_cost(book_id, run_id) or None
         await upsert_book(book)
         run.publish(
             TraceLine(

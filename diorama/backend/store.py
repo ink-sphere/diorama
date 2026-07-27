@@ -96,7 +96,11 @@ def cover_path(book_id: str, suffix: str) -> Path:
 
 
 async def delete_book(book_id: str) -> bool:
-    """Remove a book from the shelf along with its upload, structure and cover."""
+    """Remove a book from the shelf along with its upload, structure, cover and ledger.
+
+    The cost ledger goes with the book: a dashboard that keeps billing a book you
+    removed from the shelf is a row you can't click through to and can't explain.
+    """
     async with _lock:
         records = _read_all()
         remaining = [r for r in records if r.id != book_id]
@@ -108,6 +112,12 @@ async def delete_book(book_id: str) -> bool:
         path.unlink(missing_ok=True)
     for path in COVERS_DIR.glob(f"{book_id}.*"):
         path.unlink(missing_ok=True)
+
+    # Imported here, not at module scope: usage_store reads DATA_DIR from this module,
+    # so a top-level import would be circular.
+    from diorama.backend.usage_store import delete_usage
+
+    delete_usage(book_id)
     return True
 
 

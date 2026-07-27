@@ -21,6 +21,18 @@
   --danger: oklch(0.52 0.13 27);
   --shadow-page: 0 1px 2px oklch(0.3 0.02 60 / 0.06),
     0 18px 40px -24px oklch(0.3 0.02 60 / 0.35);
+
+  /* Categorical series for the cost charts. Held at one lightness and one chroma
+     so no series shouts louder than its neighbours — they're distinguished by hue
+     alone, which keeps a five-provider bar chart from turning into a carnival. The
+     first is the accent itself, since a single-series chart should read as "the
+     app's colour" rather than as an arbitrary pick from a palette. */
+  --chart-1: oklch(0.52 0.088 52);
+  --chart-2: oklch(0.53 0.082 168);
+  --chart-3: oklch(0.53 0.085 265);
+  --chart-4: oklch(0.55 0.088 330);
+  --chart-5: oklch(0.56 0.082 110);
+  --chart-6: oklch(0.54 0.08 210);
 }
 
 .dark {
@@ -37,6 +49,15 @@
   --accent-soft: oklch(0.38 0.04 55);
   --danger: oklch(0.68 0.14 27);
   --shadow-page: 0 1px 2px oklch(0 0 0 / 0.4), 0 22px 48px -26px oklch(0 0 0 / 0.75);
+
+  /* Same hues, lifted in lightness and eased in chroma: a fill that reads as
+     "medium" on parchment reads as a hole punched in a dark shell. */
+  --chart-1: oklch(0.76 0.09 62);
+  --chart-2: oklch(0.75 0.085 168);
+  --chart-3: oklch(0.74 0.088 265);
+  --chart-4: oklch(0.75 0.09 330);
+  --chart-5: oklch(0.78 0.085 110);
+  --chart-6: oklch(0.75 0.082 210);
 }
 
 @theme inline {
@@ -52,6 +73,12 @@
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
   --color-danger: var(--danger);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
 
   --font-serif: var(--font-newsreader), ui-serif, Georgia, serif;
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;

@@ -156,6 +156,38 @@ async def test_load_happy_path_single_submit():
     assert len(model.calls) == 1
 
 
+async def test_load_records_every_call_against_the_book_and_run():
+    """The loader stamps its ledger rows so the dashboard can attribute the spend."""
+    total = EbookContext.parse(ALICE).total_blocks
+    model = FakeModel([_response(tool_calls=[_full_coverage_call("c1", total)])])
+    rows: list = []
+
+    agent = EbookLoaderAgent(
+        model=model, usage_sink=rows.append, book_id="book1", run_id="run1"
+    )
+    await agent.load(ALICE)
+
+    assert [(r.book_id, r.run_id, r.agent_id) for r in rows] == [
+        ("book1", "run1", "ebook_loader")
+    ]
+
+
+async def test_load_without_a_sink_records_nothing():
+    """Cost tracking is opt-in; a script or test that doesn't want it gets no ledger."""
+    total = EbookContext.parse(ALICE).total_blocks
+    model = FakeModel([_response(tool_calls=[_full_coverage_call("c1", total)])])
+
+    await EbookLoaderAgent(model=model).load(ALICE)
+    assert model.usage_sink is None
+
+
+async def test_each_loader_gets_its_own_run_id_when_none_is_supplied():
+    """Two runs over the same book must be distinguishable in the ledger."""
+    first = EbookLoaderAgent(model=FakeModel([]))
+    second = EbookLoaderAgent(model=FakeModel([]))
+    assert first._usage_labels["run_id"] != second._usage_labels["run_id"]
+
+
 async def test_load_retries_after_rejected_structure():
     total = EbookContext.parse(ALICE).total_blocks
     bad_tree = {

@@ -216,12 +216,20 @@ function StatusLine({ book, percent }: { book: BookRecord; percent: number }) {
             {book.structure_line}
           </>
         ) : null}
+        <CostLink book={book} />
       </p>
     );
   }
 
   if (book.status === "failed") {
-    return <p className="label text-danger">Couldn&apos;t be mapped</p>;
+    return (
+      <p className="label text-danger">
+        Couldn&apos;t be mapped
+        {/* A failed run still cost money — show it, and let the reader see where
+            it went before deciding whether to try again. */}
+        <CostLink book={book} />
+      </p>
+    );
   }
 
   return (
@@ -233,5 +241,29 @@ function StatusLine({ book, percent }: { book: BookRecord; percent: number }) {
       />
       {book.status === "queued" ? "Queued" : "Reading the book"}
     </p>
+  );
+}
+
+/**
+ * What this book cost, linking into its full call-level trace.
+ *
+ * Hidden entirely when there's no recorded cost, rather than shown as `$0` — a book
+ * that predates cost tracking hasn't been established to be free, it just wasn't
+ * measured, and those two are not the same claim.
+ */
+function CostLink({ book }: { book: BookRecord }) {
+  if (book.cost_usd == null) return null;
+  return (
+    <>
+      <span className="mx-1.5 text-rule-strong">/</span>
+      <Link
+        href={`/costs/${book.id}`}
+        className="text-ink-faint decoration-rule-strong underline-offset-4 transition-colors hover:text-ink hover:underline"
+      >
+        {book.cost_usd < 0.01
+          ? `$${book.cost_usd.toFixed(4)}`
+          : `$${book.cost_usd.toFixed(2)}`}
+      </Link>
+    </>
   );
 }

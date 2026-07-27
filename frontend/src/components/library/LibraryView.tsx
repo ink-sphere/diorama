@@ -1,9 +1,10 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { BookIcon } from "@/components/Icons";
+import { BookIcon, CostsIcon, SettingsIcon } from "@/components/Icons";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { deleteBook, listBooks, retryBook, streamUrl, uploadBook } from "@/lib/api";
 import type { BookRecord, TraceLine } from "@/lib/types";
@@ -221,6 +222,20 @@ export function LibraryView() {
           </div>
           <div className="flex items-center gap-2">
             <UploadButton onFiles={handleFiles} busy={uploading > 0} />
+            <Link
+              href="/costs"
+              aria-label="Costs"
+              className="grid size-9 place-items-center rounded-full text-ink-soft transition-colors hover:bg-shell-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              <CostsIcon className="size-[18px]" />
+            </Link>
+            <Link
+              href="/settings"
+              aria-label="Settings"
+              className="grid size-9 place-items-center rounded-full text-ink-soft transition-colors hover:bg-shell-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              <SettingsIcon className="size-[18px]" />
+            </Link>
             <ThemeToggle />
           </div>
         </header>

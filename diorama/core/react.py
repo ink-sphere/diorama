@@ -71,6 +71,7 @@ from diorama.core.router import ToolRouter
 from diorama.core.session import JsonlSessionStore
 from diorama.core.tool import Tool
 from diorama.models.litellm_model import LiteLLMModel, extract_reasoning
+from diorama.models.usage import call_timer, read_provider_field, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -794,7 +795,7 @@ class ReactAgent:
 
                 outcome: dict[str, Any] = {}
                 async for event in self._assistant_events(
-                    outcome, provider_stream, signal
+                    outcome, provider_stream, signal, turn=state.turn
                 ):
                     yield event
 
@@ -1233,8 +1234,15 @@ class ReactAgent:
         outcome: dict[str, Any],
         provider_stream: bool,
         signal: CancellationToken,
+        turn: int | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Call the model, append the assistant message, and emit its events.
+
+        Also carries the per-call cost-tracking provenance: each attempt is timed, and
+        every outcome — success, transient failure that will be retried, terminal
+        failure — is reported to the model wrapper, which prices it and forwards a
+        ledger row to whatever usage sink is installed. Failed attempts cost no tokens
+        but are recorded anyway, so the call table shows what the provider actually saw.
 
         Args:
             outcome (dict): Filled with ``message`` (the appended assistant message)
@@ -1242,14 +1250,22 @@ class ReactAgent:
             provider_stream (bool): Whether to request a streaming completion.
             signal (CancellationToken): Polled between chunks so a cancelled run stops
                 consuming the stream promptly.
+            turn (int | None): The 1-based turn number, stamped onto the ledger row.
         """
         partial: dict[str, Any] = {"role": "assistant", "content": ""}
         yield MessageStartEvent(message=dict(partial))
 
         result: LLMResult | None = None
         raw_usage: Any = None
+        provider: str | None = None
+        response: Any = None
+        attempts = 0
+        elapsed_ms = 0
         for attempt in range(_MAX_LLM_RETRIES):
             accumulator = _StreamAccumulator()
+            attempts = attempt + 1
+            started_at = utc_now_iso()
+            elapsed = call_timer()
             try:
                 response = await self.model.acompletion(
                     messages=self._provider_messages(),
@@ -1258,6 +1274,7 @@ class ReactAgent:
                 )
                 if not provider_stream:
                     result, raw_usage = self._parse_response(response)
+                    elapsed_ms = elapsed()
                     break
 
                 async for chunk in response:
@@ -1272,14 +1289,39 @@ class ReactAgent:
                             message=dict(partial),
                         )
                 result, raw_usage = accumulator.finish()
+                provider = accumulator.provider
+                elapsed_ms = elapsed()
                 break
             except Exception as e:  # noqa: BLE001
                 # A stream that already produced output cannot be retried: the deltas
                 # are gone and re-issuing would duplicate them.
                 if accumulator.received:
+                    self.model.record_failure(
+                        e,
+                        context={
+                            "turn": turn,
+                            "attempt": attempts,
+                            "started_at": started_at,
+                            "duration_ms": elapsed(),
+                            "streamed": provider_stream,
+                            "provider": accumulator.provider,
+                        },
+                    )
                     raise
                 delay = _retry_delay_for(e, attempt)
-                if attempt >= _MAX_LLM_RETRIES - 1 or delay is None:
+                terminal = attempt >= _MAX_LLM_RETRIES - 1 or delay is None
+                self.model.record_failure(
+                    e,
+                    context={
+                        "status": "error" if terminal else "retry",
+                        "turn": turn,
+                        "attempt": attempts,
+                        "started_at": started_at,
+                        "duration_ms": elapsed(),
+                        "streamed": provider_stream,
+                    },
+                )
+                if terminal:
                     raise
                 logger.warning(
                     "Transient LLM error (attempt %d): %s — retrying in %ds",
@@ -1297,7 +1339,20 @@ class ReactAgent:
                     raise
 
         assert result is not None  # the loop either breaks with a result or raises
-        result.usage = self.model.record_usage(raw_usage)
+        result.usage = self.model.record_usage(
+            raw_usage,
+            response=response,
+            context={
+                "kind": "turn",
+                "turn": turn,
+                "attempt": attempts,
+                "started_at": started_at,
+                "duration_ms": elapsed_ms,
+                "streamed": provider_stream,
+                "finish_reason": result.finish_reason,
+                "provider": provider,
+            },
+        )
         if not self.preserve_reasoning:
             result.reasoning_content = None
             result.thinking_blocks = None
@@ -1366,12 +1421,23 @@ class _StreamAccumulator:
         self._tool_calls: dict[int, dict] = {}
         self._finish_reason: str | None = None
         self._usage: Any = None
+        self._provider: str | None = None
         self.received = False
 
     @property
     def content(self) -> str:
         """The assistant text received so far."""
         return "".join(self._content_parts)
+
+    @property
+    def provider(self) -> str | None:
+        """The upstream provider this stream reported, if any chunk carried one.
+
+        A streaming response has no single object to read provenance off, and only
+        some chunks repeat the field — so it is captured as the stream goes by rather
+        than reconstructed afterwards.
+        """
+        return self._provider
 
     def consume(self, chunk: Any) -> tuple[str, str]:
         """Merge one chunk and return its ``(text_delta, reasoning_delta)``.
@@ -1381,6 +1447,8 @@ class _StreamAccumulator:
         """
         if getattr(chunk, "usage", None):
             self._usage = chunk.usage
+        if self._provider is None:
+            self._provider = read_provider_field(chunk)
         choice = chunk.choices[0] if getattr(chunk, "choices", None) else None
         if choice is None:
             return "", ""

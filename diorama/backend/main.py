@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 from diorama.backend.routes.books import router as books_router  # noqa: E402
+from diorama.backend.routes.settings import router as settings_router  # noqa: E402
+from diorama.backend.routes.usage import router as usage_router  # noqa: E402
 
 app = FastAPI(title="Diorama Library API")
 
@@ -25,6 +27,8 @@ app.add_middleware(
 )
 
 app.include_router(books_router)
+app.include_router(settings_router)
+app.include_router(usage_router)
 
 
 @app.get("/api/health")
