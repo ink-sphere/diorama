@@ -12,6 +12,7 @@ import type {
   ConnectionTest,
   EbookStructure,
   ModelCatalogue,
+  Provider,
   ReadingProgress,
   SettingsUpdate,
   SettingsView,
@@ -103,7 +104,7 @@ export function saveSettings(update: SettingsUpdate): Promise<SettingsView> {
   });
 }
 
-/** OpenRouter's model list for the picker. `refresh` bypasses the 24h disk cache. */
+/** Every provider's models, merged, for the picker. `refresh` bypasses the caches. */
 export function listModels(refresh = false): Promise<ModelCatalogue> {
   return request<ModelCatalogue>(
     `/api/settings/models${refresh ? "?refresh=true" : ""}`,
@@ -111,12 +112,15 @@ export function listModels(refresh = false): Promise<ModelCatalogue> {
   );
 }
 
-/** Validate a key against OpenRouter — the one the user typed, or the stored one. */
-export function testConnection(apiKey?: string): Promise<ConnectionTest> {
+/** Validate one provider's key — the one the user typed, or the stored one. */
+export function testConnection(
+  provider: Provider,
+  apiKey?: string,
+): Promise<ConnectionTest> {
   return request<ConnectionTest>("/api/settings/test", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: apiKey ?? null }),
+    body: JSON.stringify({ provider, api_key: apiKey ?? null }),
   });
 }
 

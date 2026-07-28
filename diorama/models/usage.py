@@ -13,12 +13,13 @@ the backend's per-book JSONL ledger in the app, a list in tests, nothing at all 
 default case, which is what keeps the core agent framework free of any storage concern.
 
 **Route versus provider.** Two different questions, two fields. ``route`` is the API
-Diorama actually authenticated against and pays (today always ``openrouter``);
-``provider`` is the upstream that served the tokens, which OpenRouter reports per
-request and which varies call to call as it load-balances. Pricing follows ``route``,
-because that is who bills you; attribution follows ``provider``, because that is who
-ran the model. Collapsing the two would make a future direct-to-Anthropic credential
-indistinguishable from Anthropic-via-OpenRouter, which are different line items.
+Diorama actually authenticated against and pays (``openrouter``, or ``gemini`` for a
+direct Google AI Studio call); ``provider`` is the upstream that served the tokens,
+which OpenRouter reports per request and which varies call to call as it
+load-balances. Pricing follows ``route``, because that is who bills you; attribution
+follows ``provider``, because that is who ran the model. The split is what keeps
+Gemini-via-OpenRouter and Gemini-billed-direct as the different line items they are —
+same model, same upstream, two separate invoices.
 """
 
 from __future__ import annotations
@@ -43,10 +44,14 @@ LLMCallKind = Literal["turn", "compaction"]
 LLMCallStatus = Literal["ok", "retry", "error"]
 
 #: Which rate table priced the call. ``openrouter_live`` is the live per-token-type
-#: table (cache reads and writes priced separately); ``litellm_static`` is litellm's
-#: flat prompt/completion fallback; ``actual`` means the route reported its real charge
-#: and no estimate was needed; ``unpriced`` means nothing could price it.
-PricingSource = Literal["openrouter_live", "litellm_static", "actual", "unpriced"]
+#: table (cache reads and writes priced separately); ``google_static`` is Diorama's
+#: hand-maintained Gemini table, which Google gives no live equivalent for;
+#: ``litellm_static`` is litellm's flat prompt/completion fallback; ``actual`` means
+#: the route reported its real charge and no estimate was needed; ``unpriced`` means
+#: nothing could price it.
+PricingSource = Literal[
+    "openrouter_live", "google_static", "litellm_static", "actual", "unpriced"
+]
 
 #: Where a finished record goes. Sync by design: it is called from
 #: :meth:`LiteLLMModel.record_usage`, which is a plain method on the hot path of an
@@ -60,6 +65,9 @@ _PROVIDER_LABELS: dict[str, str] = {
     "google": "Google",
     "google-vertex": "Google Vertex",
     "google-ai-studio": "Google AI Studio",
+    # litellm's own slug for a direct AI Studio call, which is what ``route`` and
+    # (absent an upstream report) ``provider`` both come out as for a ``gemini/`` id.
+    "gemini": "Google AI Studio",
     "meta-llama": "Meta",
     "mistralai": "Mistral",
     "deepseek": "DeepSeek",

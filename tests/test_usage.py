@@ -198,6 +198,62 @@ def test_cache_reads_are_priced_at_their_own_cheaper_rate(
     assert row.cost_by_type["cache_read"] == pytest.approx(0.00009)
 
 
+def test_a_direct_gemini_call_is_priced_by_googles_published_rates(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A ``gemini/`` id is billed by Google, so the OpenRouter table must not price it.
+
+    Pinned against a rate table that *would* answer for any model, to prove the Google
+    step is reached because of the route rather than because OpenRouter happened to
+    have no entry.
+    """
+    monkeypatch.setattr(
+        PricingTable, "get", lambda self, model_id: ModelPricing(prompt=1.0)
+    )
+
+    rows: list[LLMCallRecord] = []
+    model = LiteLLMModel(
+        model_id="gemini/gemini-2.5-flash",
+        usage_sink=rows.append,
+        usage_labels={"run_id": "run1", "book_id": "book1"},
+    )
+    model.record_usage(
+        {
+            "prompt_tokens": 1000,
+            "completion_tokens": 100,
+            "cache_read_input_tokens": 800,
+        }
+    )
+
+    (row,) = rows
+    assert row.route == "gemini"
+    assert row.provider_name == "Google AI Studio"
+    assert row.pricing_source == "google_static"
+    # 200 fresh @ $0.30/M + 800 cached @ $0.075/M + 100 out @ $2.50/M.
+    assert row.cost_usd == pytest.approx(200 * 0.30e-6 + 800 * 0.075e-6 + 100 * 2.50e-6)
+
+
+def test_gemini_thinking_tokens_are_not_billed_twice(monkeypatch: pytest.MonkeyPatch):
+    """litellm folds ``thoughtsTokenCount`` into completion_tokens before we see it.
+
+    Pricing reasoning additively on top would charge for the same tokens a second
+    time — so the Gemini table leaves that rate at zero, and this pins it.
+    """
+    rows: list[LLMCallRecord] = []
+    model = LiteLLMModel(model_id="gemini/gemini-2.5-flash", usage_sink=rows.append)
+    model.record_usage(
+        {
+            "prompt_tokens": 0,
+            "completion_tokens": 500,  # already includes the 300 thinking tokens
+            "completion_tokens_details": {"reasoning_tokens": 300},
+        }
+    )
+
+    (row,) = rows
+    assert row.reasoning_tokens == 300
+    assert row.cost_usd == pytest.approx(500 * 2.50e-6)
+
+
 def test_a_call_with_no_sink_still_accumulates_but_stores_nothing():
     """The default path is unchanged: cumulative totals, no ledger, no crash."""
     model = LiteLLMModel(model_id="openrouter/openai/gpt-4o-mini")

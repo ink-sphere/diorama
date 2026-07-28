@@ -383,6 +383,8 @@ function pricingLabel(source: LLMCallRecord["pricing_source"]): string {
       return "Provider charge";
     case "openrouter_live":
       return "OpenRouter live rates";
+    case "google_static":
+      return "Google published rates";
     case "litellm_static":
       return "litellm static rates";
     default:

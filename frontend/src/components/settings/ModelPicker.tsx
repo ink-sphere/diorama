@@ -4,17 +4,19 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { CheckIcon, ChevronDownIcon, SearchIcon } from "@/components/Icons";
-import type { CatalogueEntry } from "@/lib/types";
+import type { CatalogueEntry, CatalogueStatus, ProviderView } from "@/lib/types";
 
 /**
- * A searchable list of every model OpenRouter serves.
+ * A searchable list of every model, across every provider a key is set for.
  *
- * OpenRouter lists ~340 models, most of which can't call tools — and an agent
- * pointed at a tool-less model fails only once a book is halfway through
- * processing. So the list is filtered to tool-capable models by default, with the
- * rest one toggle away and clearly marked.
+ * Two filters, for two different traps. Tool calling: OpenRouter alone lists ~340
+ * models, most of which can't call tools — and an agent pointed at a tool-less model
+ * fails only once a book is halfway through processing, so the list is narrowed to
+ * tool-capable models by default. Provider: the merged list would otherwise bury a
+ * dozen Gemini models under hundreds of OpenRouter ones, and "which provider am I
+ * about to bill" is the question a chip answers faster than reading a prefix.
  *
- * The catalogue is a convenience, never a gate: when OpenRouter can't be reached
+ * The catalogue is a convenience, never a gate: when nothing can be reached
  * (`available === false`) this degrades to a plain text field, and a model id typed
  * into the search box can always be used verbatim even if it isn't in the list.
  */
@@ -22,6 +24,8 @@ export function ModelPicker({
   value,
   onChange,
   models,
+  providers,
+  statuses,
   available,
   loading,
   id,
@@ -29,6 +33,8 @@ export function ModelPicker({
   value: string;
   onChange: (modelId: string) => void;
   models: CatalogueEntry[];
+  providers: ProviderView[];
+  statuses: CatalogueStatus[];
   available: boolean;
   loading: boolean;
   id?: string;
@@ -36,6 +42,7 @@ export function ModelPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
+  const [provider, setProvider] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -46,25 +53,35 @@ export function ModelPicker({
     () => models.find((model) => model.id === value),
     [models, value],
   );
+  const providerNames = useMemo(
+    () => new Map(providers.map((p) => [p.id as string, p.name])),
+    [providers],
+  );
 
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return models.filter((model) => {
-      // A model that's already selected stays visible even if it fails the
-      // tool-capable filter — otherwise the list appears not to contain the very
-      // thing the button above it is displaying.
-      if (!showAll && !model.supports_tools && model.id !== value) return false;
+      // A model that's already selected stays visible even if it fails a filter —
+      // otherwise the list appears not to contain the very thing the button above
+      // it is displaying.
+      const chosen = model.id === value;
+      if (provider && model.provider !== provider && !chosen) return false;
+      if (!showAll && !model.supports_tools && !chosen) return false;
       if (!needle) return true;
       return `${model.name} ${model.id}`.toLowerCase().includes(needle);
     });
-  }, [models, query, showAll, value]);
+  }, [models, query, showAll, provider, value]);
 
   const visible = matches.slice(0, MAX_ROWS);
   const typed = query.trim();
   const custom =
-    typed.length > 2 && !models.some((m) => m.id === typed || m.openrouter_id === typed)
+    typed.length > 2 &&
+    !models.some((m) => m.id === typed || m.provider_model_id === typed)
       ? typed
       : null;
+  // Only worth a chip row when there is actually something to choose between.
+  const chips = statuses.filter((status) => status.count > 0);
+  const missing = statuses.filter((status) => status.needs_key);
 
   useEffect(() => {
     if (!open) return;
@@ -87,7 +104,7 @@ export function ModelPicker({
   }, [cursor, query]);
 
   function choose(modelId: string) {
-    onChange(normalizeModelId(modelId));
+    onChange(normalizeModelId(modelId, providers));
     setOpen(false);
     setQuery("");
   }
@@ -113,8 +130,10 @@ export function ModelPicker({
     }
   }
 
-  // No catalogue and no cache: a text field is more useful than an empty list.
+  // Nothing to list: a text field is more useful than an empty dropdown. Say which
+  // of the two reasons it is, since only one of them is the user's to fix.
   if (!available && !loading) {
+    const unconnected = statuses.length > 0 && statuses.every((s) => s.needs_key);
     return (
       <div>
         <input
@@ -126,7 +145,9 @@ export function ModelPicker({
           className="w-full rounded-[3px] border border-rule bg-shell-raised px-3 py-2 font-mono text-[0.82rem] text-ink transition-colors placeholder:text-ink-faint focus:border-rule-strong focus:outline-none"
         />
         <p className="mt-1.5 text-[0.78rem] text-ink-faint">
-          Couldn&apos;t reach OpenRouter&apos;s model list — enter a model id by hand.
+          {unconnected
+            ? "Add a provider key above to browse its models — or enter an id by hand."
+            : "No model list available — enter a model id by hand."}
         </p>
       </div>
     );
@@ -156,7 +177,14 @@ export function ModelPicker({
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-2.5">
-          {selected ? <PriceTag model={selected} /> : null}
+          {selected ? (
+            <>
+              <span className="label hidden text-ink-faint sm:inline">
+                {providerNames.get(selected.provider) ?? selected.provider}
+              </span>
+              <PriceTag model={selected} />
+            </>
+          ) : null}
           <ChevronDownIcon className="size-4 text-ink-faint" />
         </span>
       </button>
@@ -186,11 +214,40 @@ export function ModelPicker({
               />
             </div>
 
+            {chips.length > 1 ? (
+              <div className="flex flex-wrap gap-1.5 border-b border-rule px-3 py-2">
+                <Chip
+                  label="All"
+                  count={models.length}
+                  active={provider === null}
+                  onClick={() => {
+                    setProvider(null);
+                    setCursor(0);
+                  }}
+                />
+                {chips.map((status) => (
+                  <Chip
+                    key={status.provider}
+                    label={status.name}
+                    count={status.count}
+                    active={provider === status.provider}
+                    onClick={() => {
+                      setProvider(
+                        provider === status.provider ? null : status.provider,
+                      );
+                      setCursor(0);
+                    }}
+                  />
+                ))}
+              </div>
+            ) : null}
+
             <div ref={listRef} className="max-h-72 overflow-y-auto py-1">
               {visible.map((model, index) => (
                 <Row
                   key={model.id}
                   model={model}
+                  providerName={providerNames.get(model.provider)}
                   active={index === cursor}
                   chosen={model.id === value}
                   onSelect={() => choose(model.id)}
@@ -209,7 +266,7 @@ export function ModelPicker({
                   }`}
                 >
                   <span className="truncate font-mono text-[0.78rem] text-ink">
-                    Use “{normalizeModelId(custom)}”
+                    Use “{normalizeModelId(custom, providers)}”
                   </span>
                   <span className="label shrink-0 text-ink-faint">Custom</span>
                 </button>
@@ -241,6 +298,12 @@ export function ModelPicker({
                 />
                 Include models without tool calling
               </label>
+              {missing.length ? (
+                <p className="mt-1.5 text-[0.72rem] text-ink-faint">
+                  Add a {missing.map((status) => status.name).join(" or ")} key above
+                  to list its models here.
+                </p>
+              ) : null}
               <p className="mt-1.5 text-[0.72rem] text-ink-faint">
                 Prices are USD per million tokens, input / output.
               </p>
@@ -255,20 +318,55 @@ export function ModelPicker({
 /** Rows past this just make the list slow to scan; the search box is the real filter. */
 const MAX_ROWS = 60;
 
-/** Accept a bare OpenRouter id — litellm needs the provider prefix to route it. */
-function normalizeModelId(modelId: string): string {
+/**
+ * A hand-typed id is routed by its prefix, so accept one that already names a
+ * provider and assume OpenRouter otherwise — which is what a bare `openai/gpt-4o`
+ * pasted from OpenRouter's own site means.
+ */
+function normalizeModelId(modelId: string, providers: ProviderView[]): string {
   const trimmed = modelId.trim();
-  return trimmed.startsWith("openrouter/") ? trimmed : `openrouter/${trimmed}`;
+  if (providers.some((p) => trimmed.startsWith(p.model_prefix))) return trimmed;
+  return `openrouter/${trimmed}`;
+}
+
+function Chip({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[0.75rem] ring-1 transition-colors ${
+        active
+          ? "bg-shell text-ink ring-rule-strong"
+          : "text-ink-faint ring-rule hover:text-ink-soft"
+      }`}
+    >
+      {label}
+      <span className="tabular-nums opacity-60">{count}</span>
+    </button>
+  );
 }
 
 function Row({
   model,
+  providerName,
   active,
   chosen,
   onSelect,
   onHover,
 }: {
   model: CatalogueEntry;
+  providerName?: string;
   active: boolean;
   chosen: boolean;
   onSelect: () => void;
@@ -294,12 +392,13 @@ function Row({
           {chosen ? <CheckIcon className="size-3.5 shrink-0 text-accent" /> : null}
         </span>
         <span className="mt-0.5 block truncate font-mono text-[0.7rem] text-ink-faint">
-          {model.openrouter_id}
+          {model.provider_model_id}
         </span>
       </span>
       <span className="flex shrink-0 flex-col items-end gap-0.5">
         <PriceTag model={model} />
         <span className="font-sans text-[0.68rem] text-ink-faint tabular-nums">
+          {providerName ? `${providerName} · ` : ""}
           {model.context_length ? `${formatContext(model.context_length)} ctx` : "—"}
           {model.supports_tools ? "" : " · no tools"}
         </span>
@@ -309,6 +408,11 @@ function Row({
 }
 
 function PriceTag({ model }: { model: CatalogueEntry }) {
+  // An unknown rate is not a zero one: Google publishes no price list, so a Gemini
+  // model outside Diorama's table has no figure to show rather than a free one.
+  if (!model.pricing_known) {
+    return <span className="label whitespace-nowrap text-ink-faint">Rate unknown</span>;
+  }
   const free = model.prompt_price === 0 && model.completion_price === 0;
   return (
     <span className="label whitespace-nowrap text-ink-faint tabular-nums">
@@ -319,7 +423,7 @@ function PriceTag({ model }: { model: CatalogueEntry }) {
   );
 }
 
-/** OpenRouter prices per token; per-million is the figure anyone actually compares.
+/** Providers price per token; per-million is the figure anyone actually compares.
  *
  * Fixed to two decimals so a scrolling column stays aligned under `tabular-nums` —
  * mixing "$1.3" and "$0.25" makes prices harder to compare than showing "$1.30". */

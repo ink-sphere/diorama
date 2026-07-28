@@ -12,15 +12,19 @@ untouched, and a value saved from the UI simply shadows it. The API-facing views
 report which of the three a live value came from (``source``), so the settings page
 can say "inherited from .env" instead of showing a mysteriously pre-filled field.
 
-Credentials are **shared across agents** while the model id is **per agent**: one
-OpenRouter account funds every agent, so asking for the same key once per agent
-would be friction with no payoff. The stored shape still nests agents in a dict
-keyed by agent id, so adding the second agent is a registry entry, not a migration.
+**There is no "current provider".** Credentials are held one per provider and shared
+across agents, while the model id stays per agent — and the model id is what names
+its provider, via the litellm prefix it carries (see
+:mod:`diorama.models.providers`). So the loader can think with a Gemini model while
+some later agent goes through OpenRouter, with no mode to switch between: choosing
+the model *is* choosing the provider, and the key that authenticates the run follows
+from it. A key is still asked for once per provider rather than once per agent, since
+one account funds every agent that routes through it.
 
 The file lives at ``.diorama_data/settings.json`` (gitignored, alongside
-``library.json``) and holds the API key in plaintext — the same trust model as the
-rest of this single-user localhost tool, where the process already reads the key
-from a plaintext ``.env``. Nothing here ever sends a key back to the browser; see
+``library.json``) and holds the API keys in plaintext — the same trust model as the
+rest of this single-user localhost tool, where the process already reads a key from a
+plaintext ``.env``. Nothing here ever sends a key back to the browser; see
 :func:`mask_key` and :class:`SettingsView`.
 """
 
@@ -30,27 +34,24 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from diorama.backend.store import DATA_DIR
+from diorama.models.providers import (
+    OPENROUTER,
+    PROVIDERS,
+    PROVIDERS_BY_ID,
+    provider_id_for_model,
+)
 
 SETTINGS_FILE = DATA_DIR / "settings.json"
 
-Provider = Literal["openrouter"]
+#: Mirrors the ids in :data:`diorama.models.providers.PROVIDERS`, spelled out because
+#: pydantic needs a static annotation. Adding a provider means an entry in both.
+Provider = Literal["openrouter", "google"]
 ValueSource = Literal["settings", "env", "default", "none"]
-
-#: The only provider wired up today. Kept as a list (and a Literal) so adding the
-#: second one is a data change plus a credential lookup, not a UI rewrite.
-PROVIDERS: list[dict[str, str]] = [
-    {
-        "id": "openrouter",
-        "name": "OpenRouter",
-        "api_key_env": "OPENROUTER_API_KEY",
-        "console_url": "https://openrouter.ai/keys",
-    },
-]
 
 _lock = asyncio.Lock()
 
@@ -111,16 +112,43 @@ class DioramaSettings(BaseModel):
     existed.
     """
 
-    provider: Provider = "openrouter"
-    api_key: str | None = None
+    #: provider id → API key. Absent means "fall back to that provider's env var".
+    api_keys: dict[str, str] = Field(default_factory=dict)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_single_provider(cls, data: Any) -> Any:
+        """Fold the pre-multi-provider shape into ``api_keys``.
+
+        Before Google AI Studio was added, a file held one ``provider`` and one
+        ``api_key``. Read it as a key *for that provider*, in place, so an install
+        that already had OpenRouter configured keeps working without the user
+        re-entering anything and without a migration step that could fail.
+        """
+        if not isinstance(data, dict) or "api_key" not in data:
+            return data
+        migrated = dict(data)
+        legacy_key = migrated.pop("api_key", None)
+        legacy_provider = migrated.pop("provider", None) or OPENROUTER
+        if legacy_key and legacy_provider in PROVIDERS_BY_ID:
+            keys = dict(migrated.get("api_keys") or {})
+            keys.setdefault(legacy_provider, legacy_key)
+            migrated["api_keys"] = keys
+        return migrated
 
 
 # --------------------------------------------------------------------------- #
 # API-facing shapes (a key never crosses this boundary)
 # --------------------------------------------------------------------------- #
 class AgentView(BaseModel):
-    """One agent row on the settings page: what it is, and what it will run."""
+    """One agent row on the settings page: what it is, and what it will run.
+
+    ``provider`` is derived from ``model_id``, not stored — it is how the page knows
+    to warn that an agent is pointed at Gemini while only an OpenRouter key is set.
+    None means the id carries no prefix Diorama recognises, in which case litellm is
+    left to find a credential in the environment itself.
+    """
 
     id: str
     name: str
@@ -130,50 +158,62 @@ class AgentView(BaseModel):
     default_model_id: str
     model_env_var: str
     configured_model_id: str | None = None
+    provider: str | None = None
 
 
 class ProviderView(BaseModel):
-    id: str
-    name: str
-    api_key_env: str
-    console_url: str
-
-
-class SettingsView(BaseModel):
-    """Everything the settings page renders.
+    """One provider, with the state of its credential.
 
     ``api_key_masked`` is a display string like ``sk-or-v1…a4f2`` — the real key is
     never serialised here, so a saved key cannot be read back out of the API.
     """
 
-    provider: Provider
-    providers: list[ProviderView]
+    id: str
+    name: str
+    api_key_env: str
+    console_url: str
+    key_prefix_hint: str
+    blurb: str
+    model_prefix: str
     api_key_configured: bool
     api_key_masked: str | None
     api_key_source: ValueSource
+
+
+class SettingsView(BaseModel):
+    """Everything the settings page renders."""
+
+    providers: list[ProviderView]
     agents: list[AgentView]
 
 
 class SettingsUpdate(BaseModel):
     """A partial write. Omitted fields are left exactly as they were.
 
-    ``api_key`` omitted means "keep the stored key" — which is what the form sends
-    back when the user did not retype it, since it only ever received a mask.
-    Clearing a key therefore needs its own explicit flag rather than an empty string.
+    Both dicts are sparse in the same way and for the same reason: an entry that
+    isn't there means "unchanged", because the form only ever received a mask of a
+    key and a resolved (possibly inherited) model id, so sending everything it
+    rendered would bake inherited values into the file. An **empty string** is the
+    explicit erase — clearing a key, or resetting an agent to inherit.
     """
 
-    provider: Provider | None = None
-    api_key: str | None = None
-    clear_api_key: bool = False
-    #: agent id → litellm model id. An empty string resets that agent to inherit.
+    #: provider id → API key. "" clears that provider's saved key.
+    api_keys: dict[str, str] | None = None
+    #: agent id → litellm model id. "" resets that agent to inherit.
     agents: dict[str, str] | None = None
 
 
 class ConnectionTest(BaseModel):
-    """The result of a "Test connection" click."""
+    """The result of a "Test connection" click, for one provider.
+
+    ``usage_usd`` / ``limit_usd`` / ``is_free_tier`` come from OpenRouter's key
+    endpoint; Google's has no equivalent, so they stay None there rather than being
+    faked into zeros.
+    """
 
     ok: bool
     message: str
+    provider: str = OPENROUTER
     label: str | None = None
     usage_usd: float | None = None
     limit_usd: float | None = None
@@ -216,14 +256,14 @@ async def save_settings(update: SettingsUpdate) -> DioramaSettings:
     async with _lock:
         settings = _read()
 
-        if update.provider is not None:
-            settings.provider = update.provider
-
-        if update.clear_api_key:
-            settings.api_key = None
-        elif update.api_key is not None:
-            key = update.api_key.strip()
-            settings.api_key = key or None
+        for provider_id, api_key in (update.api_keys or {}).items():
+            if provider_id not in PROVIDERS_BY_ID:
+                continue  # ignore unknown providers rather than persisting junk
+            key = (api_key or "").strip()
+            if key:
+                settings.api_keys[provider_id] = key
+            else:
+                settings.api_keys.pop(provider_id, None)
 
         for agent_id, model_id in (update.agents or {}).items():
             if agent_id not in AGENTS_BY_ID:
@@ -245,15 +285,28 @@ def mask_key(key: str) -> str:
     return f"{key[:8]}…{key[-4:]}"
 
 
-def resolve_api_key(settings: DioramaSettings) -> tuple[str | None, ValueSource]:
-    """The API key to authenticate with, and where it came from."""
-    if settings.api_key:
-        return settings.api_key, "settings"
-    env_var = next(
-        (p["api_key_env"] for p in PROVIDERS if p["id"] == settings.provider),
-        "OPENROUTER_API_KEY",
-    )
-    from_env = os.environ.get(env_var)
+def resolve_api_key(
+    settings: DioramaSettings, provider_id: str | None
+) -> tuple[str | None, ValueSource]:
+    """One provider's API key, and where it came from.
+
+    Args:
+        settings (DioramaSettings): The stored settings.
+        provider_id (str | None): Which provider's credential to resolve. None — the
+            answer :func:`~diorama.models.providers.provider_for_model` gives for an
+            id Diorama doesn't recognise — yields no key, leaving litellm to its own
+            environment lookup.
+
+    Returns:
+        tuple[str | None, ValueSource]: The key and its origin.
+    """
+    provider = PROVIDERS_BY_ID.get(provider_id or "")
+    if provider is None:
+        return None, "none"
+    saved = settings.api_keys.get(provider.id)
+    if saved:
+        return saved, "settings"
+    from_env = os.environ.get(provider.api_key_env)
     if from_env:
         return from_env, "env"
     return None, "none"
@@ -280,24 +333,39 @@ def resolve_model_id(
 async def resolve_agent_runtime(agent_id: str) -> tuple[str, str | None]:
     """``(model_id, api_key)`` for one agent, reading settings fresh.
 
+    The key is the one belonging to the provider the resolved *model* names, which is
+    what lets two agents run against two different providers in the same install.
+
     Read per run rather than cached at import, so editing the settings page (or a
     ``.env``) takes effect on the next book without restarting the backend.
     """
     settings = await load_settings()
     model_id, _ = resolve_model_id(settings, agent_id)
-    api_key, _ = resolve_api_key(settings)
+    api_key, _ = resolve_api_key(settings, provider_id_for_model(model_id))
     return model_id, api_key
 
 
-def build_view(settings: DioramaSettings) -> SettingsView:
-    """Project the stored settings into the browser-facing shape (key masked)."""
-    api_key, key_source = resolve_api_key(settings)
-    return SettingsView(
-        provider=settings.provider,
-        providers=[ProviderView(**p) for p in PROVIDERS],
+def _provider_view(settings: DioramaSettings, provider_id: str) -> ProviderView:
+    definition = PROVIDERS_BY_ID[provider_id]
+    api_key, source = resolve_api_key(settings, provider_id)
+    return ProviderView(
+        id=definition.id,
+        name=definition.name,
+        api_key_env=definition.api_key_env,
+        console_url=definition.console_url,
+        key_prefix_hint=definition.key_prefix_hint,
+        blurb=definition.blurb,
+        model_prefix=definition.litellm_prefix,
         api_key_configured=api_key is not None,
         api_key_masked=mask_key(api_key) if api_key else None,
-        api_key_source=key_source,
+        api_key_source=source,
+    )
+
+
+def build_view(settings: DioramaSettings) -> SettingsView:
+    """Project the stored settings into the browser-facing shape (keys masked)."""
+    return SettingsView(
+        providers=[_provider_view(settings, p.id) for p in PROVIDERS],
         agents=[
             AgentView(
                 id=definition.id,
@@ -310,6 +378,7 @@ def build_view(settings: DioramaSettings) -> SettingsView:
                 configured_model_id=(
                     settings.agents.get(definition.id) or AgentConfig()
                 ).model_id,
+                provider=provider_id_for_model(resolved[0]),
             )
             for definition in AGENTS
         ],
@@ -326,6 +395,8 @@ __all__ = [
     "AgentView",
     "ConnectionTest",
     "DioramaSettings",
+    "Provider",
+    "ProviderView",
     "SettingsUpdate",
     "SettingsView",
     "build_view",

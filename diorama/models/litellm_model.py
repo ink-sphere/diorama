@@ -22,10 +22,13 @@ import litellm
 import weave
 from pydantic import BaseModel, Field
 
-from diorama.models.pricing import PricingTable
+from diorama.models.google_pricing import get_pricing as google_pricing
+from diorama.models.pricing import ModelPricing, PricingTable
 from diorama.models.prompt_cache import apply_prompt_caching, extract_cache_tokens
+from diorama.models.providers import GOOGLE, provider_id_for_model
 from diorama.models.usage import (
     LLMCallRecord,
+    PricingSource,
     extract_provider,
     extract_route,
     split_model_id,
@@ -283,12 +286,15 @@ class LiteLLMModel(BaseModel):
         cannot say *how* a figure was arrived at invites the reader to trust a flat
         litellm guess exactly as much as a live per-token-type rate.
 
-        1. The live OpenRouter table, which prices each token type separately (cache
+        1. Diorama's own Gemini table, for a direct ``gemini/`` call. Google publishes
+           no machine-readable price list, and litellm's static map knows nothing about
+           cached input — which is most of what a long agent transcript costs.
+        2. The live OpenRouter table, which prices each token type separately (cache
            reads are far cheaper than fresh prompt tokens, cache writes dearer).
-        2. litellm's static flat prompt/completion pricing.
+        3. litellm's static flat prompt/completion pricing.
 
-        A direct-provider rate table would slot in as a step of its own here, keyed on
-        ``route``; nothing above this method assumes OpenRouter is the only payer.
+        Each table is keyed on the route the model id names, so a provider added later
+        slots in as a step of its own; nothing above this method assumes a single payer.
 
         Args:
             prompt_tokens (int): Number of non-cached input tokens.
@@ -302,7 +308,15 @@ class LiteLLMModel(BaseModel):
                 cost split, and the :data:`~diorama.models.usage.PricingSource` that
                 produced them.
         """
-        pricing = PricingTable.instance().get(self.model_id)
+        pricing: ModelPricing | None = None
+        source: PricingSource = "unpriced"
+        if provider_id_for_model(self.model_id) == GOOGLE:
+            pricing, source = google_pricing(self.model_id), "google_static"
+        if pricing is None:
+            pricing, source = (
+                PricingTable.instance().get(self.model_id),
+                "openrouter_live",
+            )
         if pricing is not None:
             breakdown = pricing.cost_breakdown(
                 prompt_tokens=prompt_tokens,
@@ -311,7 +325,7 @@ class LiteLLMModel(BaseModel):
                 cache_write_tokens=cache_write,
                 reasoning_tokens=reasoning,
             )
-            return sum(breakdown.values()), breakdown, "openrouter_live"
+            return sum(breakdown.values()), breakdown, source
         # Fallback: litellm flat pricing, attributed to prompt/completion.
         flat = self.cost_for(prompt_tokens, completion_tokens)
         source = "litellm_static" if flat else "unpriced"

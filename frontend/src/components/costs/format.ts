@@ -71,7 +71,7 @@ export function formatDay(date: string): string {
 
 /** `openrouter/openai/gpt-4o-mini` reads better as `openai/gpt-4o-mini`. */
 export function shortModelId(modelId: string): string {
-  return modelId.replace(/^openrouter\//, "");
+  return modelId.replace(/^(openrouter|gemini)\//, "");
 }
 
 /** `cache_read` → `Cache read`, for the cost-by-type breakdown. */

@@ -82,7 +82,7 @@ export interface UploadResponse {
 /* Settings — mirrors `diorama/backend/settings.py`.                           */
 /* -------------------------------------------------------------------------- */
 
-export type Provider = "openrouter";
+export type Provider = "openrouter" | "google";
 
 /**
  * Where a live value came from. The backend resolves settings → env → default, so
@@ -91,11 +91,20 @@ export type Provider = "openrouter";
  */
 export type ValueSource = "settings" | "env" | "default" | "none";
 
+/** One provider and the state of its credential. Keys are held per provider. */
 export interface ProviderView {
   id: Provider;
   name: string;
   api_key_env: string;
   console_url: string;
+  key_prefix_hint: string;
+  blurb: string;
+  /** The litellm prefix that marks a model as this provider's (`gemini/`). */
+  model_prefix: string;
+  api_key_configured: boolean;
+  /** A display-only mask like `sk-or-v1…a4f2`; the real key never leaves the backend. */
+  api_key_masked?: string | null;
+  api_key_source: ValueSource;
 }
 
 export interface AgentView {
@@ -109,50 +118,67 @@ export interface AgentView {
   model_env_var: string;
   /** Only what's saved in settings.json — null when the value is inherited. */
   configured_model_id?: string | null;
+  /** Derived from `model_id`'s prefix; null when it names no known provider. */
+  provider?: Provider | null;
 }
 
 export interface SettingsView {
-  provider: Provider;
   providers: ProviderView[];
-  api_key_configured: boolean;
-  /** A display-only mask like `sk-or-v1…a4f2`; the real key never leaves the backend. */
-  api_key_masked?: string | null;
-  api_key_source: ValueSource;
   agents: AgentView[];
 }
 
-/** A partial write — omitted fields keep their stored value. */
+/**
+ * A partial write — an omitted entry keeps its stored value, an empty string erases
+ * it (clearing a key, or resetting an agent to inherit). The form only ever holds a
+ * mask of a key and a possibly-inherited model id, so sending everything it rendered
+ * would bake inherited values into the file.
+ */
 export interface SettingsUpdate {
-  provider?: Provider;
-  /** Omit to keep the stored key; the form only ever holds a mask of it. */
-  api_key?: string;
-  clear_api_key?: boolean;
+  /** provider id → API key; "" clears the saved key. */
+  api_keys?: Record<string, string>;
   /** agent id → litellm model id; "" resets that agent to inherit. */
   agents?: Record<string, string>;
 }
 
 export interface CatalogueEntry {
-  /** The litellm id (`openrouter/openai/gpt-4o`) — what gets saved. */
+  /** The litellm id (`openrouter/openai/gpt-4o`, `gemini/gemini-2.5-flash`). */
   id: string;
-  openrouter_id: string;
+  provider: Provider;
+  /** The bare id at that provider, as its own console spells it. */
+  provider_model_id: string;
   name: string;
   vendor: string;
   context_length?: number | null;
   prompt_price: number;
   completion_price: number;
+  /** False when no rate is known — 0.0 then means "no idea", not "free". */
+  pricing_known: boolean;
   supports_tools: boolean;
+}
+
+/** Why one provider's slice of the picker is (or isn't) populated. */
+export interface CatalogueStatus {
+  provider: Provider;
+  name: string;
+  available: boolean;
+  /** True when the provider isn't connected — its models are withheld, not missing. */
+  needs_key: boolean;
+  count: number;
 }
 
 export interface ModelCatalogue {
   models: CatalogueEntry[];
-  /** False when OpenRouter couldn't be reached and no cache existed. */
+  /** False when no provider returned anything at all. */
   available: boolean;
+  providers: CatalogueStatus[];
 }
 
 export interface ConnectionTest {
   ok: boolean;
   message: string;
+  provider?: Provider;
   label?: string | null;
+  /** OpenRouter reports spend against the key; Google has no equivalent. */
   usage_usd?: number | null;
   limit_usd?: number | null;
   is_free_tier?: boolean | null;
@@ -173,6 +199,7 @@ export type LLMCallStatus = "ok" | "retry" | "error";
  *  masquerades as a real charge. */
 export type PricingSource =
   | "openrouter_live"
+  | "google_static"
   | "litellm_static"
   | "actual"
   | "unpriced";
