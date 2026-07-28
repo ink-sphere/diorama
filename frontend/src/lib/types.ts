@@ -7,7 +7,13 @@
  */
 
 export type BookStatus = "queued" | "processing" | "ready" | "failed";
-export type TraceKind = "status" | "thinking" | "tool" | "done" | "error";
+export type TraceKind =
+  | "status"
+  | "thinking"
+  | "tool"
+  | "progress"
+  | "done"
+  | "error";
 export type TraceStatus = "pending" | "done" | "error";
 
 export interface Coverage {
@@ -18,6 +24,8 @@ export interface Coverage {
 
 export interface ReadingProgress {
   section_index: number;
+  /** The scene the reader is inside — stable across type-size changes. */
+  scene_index?: number | null;
   page: number;
   pages: number;
   percent: number;
@@ -38,6 +46,8 @@ export interface BookRecord {
   top_level_count?: number | null;
   coverage?: Coverage | null;
   cost_usd?: number | null;
+  /** Total scenes found across every section; null when the book has none recorded. */
+  scene_count?: number | null;
   error?: string | null;
   progress?: ReadingProgress | null;
 }
@@ -48,6 +58,9 @@ export interface TraceLine {
   status: TraceStatus;
   text: string;
   tool?: string | null;
+  /** Set only on `kind: "progress"` rows, which render as a bar rather than a line. */
+  done?: number | null;
+  total?: number | null;
   at: number;
 }
 
@@ -76,6 +89,37 @@ export interface EbookStructure {
 export interface UploadResponse {
   book: BookRecord;
   stream_url: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Scenes — mirrors `diorama/ebook/scenes.py`.                                 */
+/* -------------------------------------------------------------------------- */
+
+/** One stretch of a section a single illustration could depict. */
+export interface Scene {
+  start_paragraph: number;
+  end_paragraph: number;
+  text: string;
+}
+
+/** One leaf section's scenes; the scenes always partition its paragraphs exactly. */
+export interface SceneSegmentation {
+  scenes: Scene[];
+  paragraph_count: number;
+  start_block_id?: number | null;
+  end_block_id?: number | null;
+  level_type?: string | null;
+  number?: string | null;
+  title?: string | null;
+  cost_usd: number;
+}
+
+export interface BookScenes {
+  title: string;
+  author?: string | null;
+  /** One entry per leaf section, in the same reading order `readBook()` flattens to. */
+  segmentations: SceneSegmentation[];
+  cost_usd: number;
 }
 
 /* -------------------------------------------------------------------------- */

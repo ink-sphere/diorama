@@ -39,7 +39,10 @@ from diorama.models.providers import (
 
 KEY = "sk-or-v1-0123456789abcdef0123456789abcdef"
 GOOGLE_KEY = "AIzaSyD-0123456789abcdefghijklmnopqrs"
-DEFAULT_MODEL = "openrouter/openai/gpt-4o-mini"
+#: What an install with an OpenRouter key (or no key at all) falls back to.
+DEFAULT_MODEL = "openrouter/google/gemini-3.6-flash"
+#: ...and what the same agent falls back to on a Google-only install.
+GOOGLE_DEFAULT_MODEL = "gemini/gemini-3.6-flash"
 GEMINI_MODEL = "gemini/gemini-2.5-flash"
 
 
@@ -51,6 +54,7 @@ def settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("DIORAMA_LOADER_MODEL_ID", raising=False)
+    monkeypatch.delenv("DIORAMA_SCENE_MODEL_ID", raising=False)
     return path
 
 
@@ -82,7 +86,7 @@ def test_to_litellm_id_is_idempotent_per_provider() -> None:
 
 
 def test_strip_prefix_uses_the_registry() -> None:
-    assert strip_prefix(DEFAULT_MODEL) == "openai/gpt-4o-mini"
+    assert strip_prefix(DEFAULT_MODEL) == "google/gemini-3.6-flash"
     assert strip_prefix(GEMINI_MODEL) == "gemini-2.5-flash"
     assert strip_prefix("gpt-4o-mini") == "gpt-4o-mini"
 
@@ -93,6 +97,72 @@ def test_strip_prefix_uses_the_registry() -> None:
 def test_model_falls_back_to_default(settings_file: Path) -> None:
     model_id, source = resolve_model_id(DioramaSettings(), "ebook_loader")
     assert (model_id, source) == (DEFAULT_MODEL, "default")
+
+
+def test_the_default_follows_the_provider_the_install_can_authenticate(
+    settings_file: Path,
+) -> None:
+    """Defaults are per provider, so an unconfigured agent runs on the key you have."""
+    google_only = DioramaSettings(api_keys={GOOGLE: GOOGLE_KEY})
+    openrouter_only = DioramaSettings(api_keys={OPENROUTER: KEY})
+
+    for agent_id in ("ebook_loader", "ebook_scene_segmentation"):
+        assert resolve_model_id(google_only, agent_id) == (
+            GOOGLE_DEFAULT_MODEL,
+            "default",
+        )
+        assert resolve_model_id(openrouter_only, agent_id) == (DEFAULT_MODEL, "default")
+
+
+def test_with_several_providers_connected_registry_order_decides(
+    settings_file: Path,
+) -> None:
+    both = DioramaSettings(api_keys={OPENROUTER: KEY, GOOGLE: GOOGLE_KEY})
+    assert resolve_model_id(both, "ebook_loader") == (DEFAULT_MODEL, "default")
+
+
+def test_with_no_provider_connected_the_default_is_still_defined(
+    settings_file: Path,
+) -> None:
+    """Every default is equally unusable here; show the first rather than nothing."""
+    assert resolve_model_id(DioramaSettings(), "ebook_loader") == (
+        DEFAULT_MODEL,
+        "default",
+    )
+
+
+def test_a_key_in_the_environment_also_steers_the_default(
+    settings_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default follows a resolvable key, not specifically a saved one."""
+    monkeypatch.setenv("GEMINI_API_KEY", "google-from-env")
+    assert resolve_model_id(DioramaSettings(), "ebook_loader") == (
+        GOOGLE_DEFAULT_MODEL,
+        "default",
+    )
+
+
+async def test_an_unconfigured_agent_on_a_google_only_install_gets_a_usable_runtime(
+    settings_file: Path,
+) -> None:
+    """The regression this exists for.
+
+    Scene segmentation shipped with a single OpenRouter default onto an install that
+    held only a Google key. It resolved to an OpenRouter model, was handed no key, and
+    401-ed on every section — silently, because its failures are non-fatal by design.
+    An unconfigured agent must come out of resolution with a model *and* the key that
+    authenticates it.
+    """
+    await save_settings(
+        SettingsUpdate(
+            api_keys={GOOGLE: GOOGLE_KEY}, agents={"ebook_loader": GEMINI_MODEL}
+        )
+    )
+
+    model_id, api_key = await resolve_agent_runtime("ebook_scene_segmentation")
+
+    assert model_id == GOOGLE_DEFAULT_MODEL
+    assert api_key == GOOGLE_KEY
 
 
 def test_env_var_shadows_the_default(
@@ -303,9 +373,32 @@ def test_get_settings_on_a_fresh_install(client: TestClient) -> None:
     assert [p["id"] for p in body["providers"]] == [OPENROUTER, GOOGLE]
     assert all(p["api_key_configured"] is False for p in body["providers"])
     assert all(p["api_key_source"] == "none" for p in body["providers"])
-    assert [a["id"] for a in body["agents"]] == ["ebook_loader"]
-    assert body["agents"][0]["model_id"] == DEFAULT_MODEL
-    assert body["agents"][0]["provider"] == OPENROUTER
+    assert [a["id"] for a in body["agents"]] == [
+        "ebook_loader",
+        "ebook_scene_segmentation",
+    ]
+    assert all(a["model_id"] == DEFAULT_MODEL for a in body["agents"])
+    assert all(a["provider"] == OPENROUTER for a in body["agents"])
+    # Each agent resolves independently, so a fresh install has nothing saved for
+    # either — the shown model is inherited, not chosen.
+    assert all(a["configured_model_id"] is None for a in body["agents"])
+
+
+def test_the_view_reports_the_default_this_install_would_actually_use(
+    client: TestClient,
+) -> None:
+    """`default_model_id` labels the Reset control, so it has to be the real one."""
+    assert all(
+        a["default_model_id"] == DEFAULT_MODEL
+        for a in client.get("/api/settings").json()["agents"]
+    )
+
+    client.put("/api/settings", json={"api_keys": {GOOGLE: GOOGLE_KEY}})
+
+    body = client.get("/api/settings").json()
+    assert all(a["default_model_id"] == GOOGLE_DEFAULT_MODEL for a in body["agents"])
+    assert all(a["model_id"] == GOOGLE_DEFAULT_MODEL for a in body["agents"])
+    assert all(a["provider"] == GOOGLE for a in body["agents"])
 
 
 def test_put_saves_and_returns_the_masked_view(
@@ -521,7 +614,17 @@ def test_warnings_are_scoped_to_the_provider_under_test(
     monkeypatch.setattr(
         settings_routes, "list_models", lambda **_: [_openrouter_model("openai/gpt-4o")]
     )
-    client.put("/api/settings", json={"agents": {"ebook_loader": GEMINI_MODEL}})
+    # Every agent, or the ones left on OpenRouter would warn about this stub
+    # catalogue and drown out what's being asserted.
+    client.put(
+        "/api/settings",
+        json={
+            "agents": {
+                "ebook_loader": GEMINI_MODEL,
+                "ebook_scene_segmentation": GEMINI_MODEL,
+            }
+        },
+    )
 
     body = client.post("/api/settings/test", json={"api_key": "good"}).json()
     assert body["warnings"] == []

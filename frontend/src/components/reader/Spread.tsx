@@ -13,6 +13,11 @@ import type { ReaderPrefs } from "@/lib/useReaderPrefs";
  * The text page is a viewport over a multi-column box (see `usePagination`); a page
  * turn translates that box by exactly one column width, which is why the animation
  * is on `x` and never on opacity — the paper doesn't move, the text does.
+ *
+ * Scenes are the page unit: each is its own block with a forced column break before
+ * it (`.scene-break`), so a scene always opens a page, overflows onto as many as it
+ * needs, and the next one starts on the page after it ends. Nothing here computes
+ * that — the browser fits scenes to columns exactly as it fits words to lines.
  */
 export function Spread({
   section,
@@ -20,6 +25,7 @@ export function Spread({
   page,
   pageCount,
   pageWidth,
+  sceneIndex,
   measured,
   viewportRef,
   contentRef,
@@ -31,6 +37,8 @@ export function Spread({
   page: number;
   pageCount: number;
   pageWidth: number;
+  /** Which scene the current page is inside; -1 before the first measurement. */
+  sceneIndex: number;
   measured: boolean;
   viewportRef: RefObject<HTMLDivElement | null>;
   contentRef: RefObject<HTMLDivElement | null>;
@@ -66,8 +74,21 @@ export function Spread({
               >
                 {section.heading}
               </h2>
-              {section.paragraphs.map((paragraph, index) => (
-                <p key={index}>{paragraph}</p>
+              {section.scenes.map((paragraphs, index) => (
+                <div
+                  key={index}
+                  data-scene={index}
+                  className={index > 0 ? "scene-break" : undefined}
+                >
+                  {paragraphs.map((paragraph, position) => (
+                    <p key={position}>{paragraph}</p>
+                  ))}
+                  {index < section.scenes.length - 1 ? (
+                    <p className="scene-end" aria-hidden>
+                      ❦
+                    </p>
+                  ) : null}
+                </div>
               ))}
             </motion.div>
           </div>
@@ -94,7 +115,12 @@ export function Spread({
               aria-hidden
             />
           </div>
-          <PlatePage section={section} bookTitle={bookTitle} />
+          <PlatePage
+            section={section}
+            bookTitle={bookTitle}
+            sceneIndex={sceneIndex}
+            sceneCount={section.scenes.length}
+          />
         </>
       ) : null}
     </div>
@@ -107,18 +133,32 @@ export function Spread({
  * Diorama doesn't generate illustrations yet, so this is a reserved, designed slot
  * rather than a picture: an empty plate on laid paper, captioned with what it is
  * waiting for. When images do exist, only the inside of the frame changes.
+ *
+ * It tracks the *scene*, not the section — a scene is what an illustration will
+ * depict, so the plate changes as you turn into the next one. A section with a single
+ * scene (or none to segment) names the section instead: "scene 1 of 1" is a fact
+ * about the data, not something worth telling the reader.
  */
 function PlatePage({
   section,
   bookTitle,
+  sceneIndex,
+  sceneCount,
 }: {
   section: Section;
   bookTitle: string;
+  sceneIndex: number;
+  sceneCount: number;
 }) {
+  const subject =
+    sceneCount > 1 && sceneIndex >= 0
+      ? `scene ${sceneIndex + 1} of ${sceneCount}`
+      : section.heading;
+
   return (
     <div className="relative hidden min-w-0 flex-1 flex-col items-center justify-center px-[8%] py-[4.5%] lg:flex">
       <motion.figure
-        key={section.index}
+        key={`${section.index}-${Math.max(sceneIndex, 0)}`}
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
@@ -131,8 +171,9 @@ function PlatePage({
           </div>
         </div>
         <figcaption className="mt-5 text-center font-serif text-[0.88rem] leading-relaxed text-ink-soft italic">
-          An illustration for {section.heading} will sit here.
+          An illustration for {subject} will sit here.
           <span className="label mt-2 block text-ink-faint not-italic">
+            {sceneCount > 1 && sceneIndex >= 0 ? `${section.heading} · ` : ""}
             {bookTitle}
           </span>
         </figcaption>

@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from diorama.backend.store import DATA_DIR
 from diorama.models.providers import (
+    GOOGLE,
     OPENROUTER,
     PROVIDERS,
     PROVIDERS_BY_ID,
@@ -68,15 +69,33 @@ class AgentDefinition:
         name (str): Human-readable name shown in the UI.
         description (str): One line explaining what the agent does, so a reader can
             tell which model they are choosing a model *for*.
-        default_model_id (str): The litellm model id used when nothing is configured.
-        model_env_var (str): Environment variable consulted before the default.
+        default_models (dict[str, str]): provider id → the litellm model id this agent
+            falls back to **when that provider is the one the install can
+            authenticate**. One default per provider rather than one overall, because
+            an unconfigured agent whose single default named a provider you hold no key
+            for doesn't run at all — it 401s on its first call, which is a silent
+            failure if that agent's failures are non-fatal.
+        model_env_var (str): Environment variable consulted before the defaults.
     """
 
     id: str
     name: str
     description: str
-    default_model_id: str
+    default_models: dict[str, str]
     model_env_var: str
+
+    @property
+    def fallback_model_id(self) -> str:
+        """The default when *no* provider is connected — first in registry order.
+
+        Something has to be shown on a fresh install with no keys at all, where every
+        default is equally unusable. There is no cleverer answer than "the first one".
+        """
+        for provider in PROVIDERS:
+            model = self.default_models.get(provider.id)
+            if model:
+                return model
+        raise ValueError(f"agent {self.id!r} declares no default model")
 
 
 AGENTS: list[AgentDefinition] = [
@@ -87,8 +106,24 @@ AGENTS: list[AgentDefinition] = [
             "Reads an uploaded EPUB end to end and works out its real hierarchy — "
             "acts, chapters, scenes — before the book lands on the shelf."
         ),
-        default_model_id="openrouter/openai/gpt-4o-mini",
+        default_models={
+            OPENROUTER: "openrouter/google/gemini-3.6-flash",
+            GOOGLE: "gemini/gemini-3.6-flash",
+        },
         model_env_var="DIORAMA_LOADER_MODEL_ID",
+    ),
+    AgentDefinition(
+        id="ebook_scene_segmentation",
+        name="Scene segmentation",
+        description=(
+            "Takes each section the loader found and marks where the picture would "
+            "change — the scene boundaries a later illustration hangs on."
+        ),
+        default_models={
+            OPENROUTER: "openrouter/google/gemini-3.6-flash",
+            GOOGLE: "gemini/gemini-3.6-flash",
+        },
+        model_env_var="DIORAMA_SCENE_MODEL_ID",
     ),
 ]
 
@@ -148,6 +183,11 @@ class AgentView(BaseModel):
     to warn that an agent is pointed at Gemini while only an OpenRouter key is set.
     None means the id carries no prefix Diorama recognises, in which case litellm is
     left to find a credential in the environment itself.
+
+    ``default_model_id`` is **this install's** default (see
+    :func:`resolve_default_model_id`), not a constant: it is what clearing the field
+    would actually resolve to, which is the only version of "the default" worth
+    labelling a Reset control with.
     """
 
     id: str
@@ -312,6 +352,29 @@ def resolve_api_key(
     return None, "none"
 
 
+def resolve_default_model_id(
+    settings: DioramaSettings, definition: AgentDefinition
+) -> str:
+    """The default ``definition`` falls back to **on this install**.
+
+    Picks the default belonging to the first provider (in registry order) this install
+    holds a usable key for, so an agent nobody has configured runs on the credential
+    that actually exists rather than 401-ing against the one that doesn't. With several
+    providers connected the registry order decides; with none, so does
+    :attr:`AgentDefinition.fallback_model_id`.
+
+    This is the fix for a real failure: the scene segmenter shipped with a single
+    OpenRouter default onto an install that only had a Google key, and — because its
+    failures are deliberately non-fatal — every section quietly fell back to one
+    whole-section scene instead of the run stopping to say the key was missing.
+    """
+    for provider in PROVIDERS:
+        model = definition.default_models.get(provider.id)
+        if model and resolve_api_key(settings, provider.id)[0]:
+            return model
+    return definition.fallback_model_id
+
+
 def resolve_model_id(
     settings: DioramaSettings, agent_id: str
 ) -> tuple[str, ValueSource]:
@@ -327,7 +390,7 @@ def resolve_model_id(
     from_env = os.environ.get(definition.model_env_var)
     if from_env:
         return from_env, "env"
-    return definition.default_model_id, "default"
+    return resolve_default_model_id(settings, definition), "default"
 
 
 async def resolve_agent_runtime(agent_id: str) -> tuple[str, str | None]:
@@ -373,7 +436,7 @@ def build_view(settings: DioramaSettings) -> SettingsView:
                 description=definition.description,
                 model_id=(resolved := resolve_model_id(settings, definition.id))[0],
                 model_source=resolved[1],
-                default_model_id=definition.default_model_id,
+                default_model_id=resolve_default_model_id(settings, definition),
                 model_env_var=definition.model_env_var,
                 configured_model_id=(
                     settings.agents.get(definition.id) or AgentConfig()
@@ -404,6 +467,7 @@ __all__ = [
     "mask_key",
     "resolve_agent_runtime",
     "resolve_api_key",
+    "resolve_default_model_id",
     "resolve_model_id",
     "save_settings",
 ]

@@ -7,7 +7,7 @@
  * this walk invalidates every saved position.
  */
 
-import type { EbookStructure, StructureNode } from "./types";
+import type { BookScenes, EbookStructure, StructureNode } from "./types";
 
 export interface Section {
   /** Depth-first leaf index; matches `ReadingProgress.section_index`. */
@@ -19,6 +19,16 @@ export interface Section {
   levelType: string;
   /** Ancestor headings, outermost first — shown as the reader's breadcrumb. */
   ancestors: string[];
+  /**
+   * The section's paragraphs grouped into scenes — the reader's page unit, since
+   * each scene begins a fresh page.
+   *
+   * Always at least one group: a section with no segmentation (a `preamble_text`
+   * opening, a book processed before scenes existed, a failed pass) is one scene
+   * spanning everything, which paginates exactly as it did before scenes.
+   */
+  scenes: string[][];
+  /** Every paragraph, scene grouping flattened away. */
   paragraphs: string[];
   wordCount: number;
   startBlockId: number;
@@ -133,11 +143,63 @@ function countWords(paragraphs: string[]): number {
 }
 
 /**
+ * Split a leaf's text into scene groups, using each scene's own text rather than its
+ * paragraph indices.
+ *
+ * The indices are into the backend's `split_paragraphs` (a bare `"\n\n"` split);
+ * `toParagraphs` here trims and drops empties, and `stripRepeatedHeading` removes
+ * leading ones — so an index that meant paragraph 7 on the backend can mean a
+ * different paragraph by the time it reaches the page. Each scene carries its verbatim
+ * text, and the scenes partition the section exactly, so re-splitting each one
+ * side-steps the drift entirely and cannot silently misplace a boundary.
+ */
+function toScenes(
+  segmentation: { scenes: { text: string }[] } | undefined,
+  fallback: string[],
+  heading: string,
+): string[][] {
+  if (!segmentation || segmentation.scenes.length === 0) return [fallback];
+
+  const groups = segmentation.scenes
+    .map((scene) => toParagraphs(scene.text))
+    .filter((group) => group.length > 0);
+  if (groups.length === 0) return [fallback];
+
+  // The heading repeat lives at the very front of the section, so it can only be in
+  // the first scene — and stripping it can empty a scene that was nothing else.
+  groups[0] = stripRepeatedHeading(groups[0], heading);
+  const kept = groups.filter((group) => group.length > 0);
+  return kept.length > 0 ? kept : [fallback];
+}
+
+/** Index a book's segmentations by the block their section starts at.
+ *
+ * Position would be the obvious key, and would be wrong: `readBook` emits an extra
+ * "Opening" section for any branch node carrying `preamble_text`, which is not a leaf
+ * and therefore has no segmentation of its own. One such node shifts every later
+ * section off its scenes. The starting block id is carried by both sides and is unique
+ * per section, so it survives that.
+ */
+function byStartBlock(scenes: BookScenes | null | undefined) {
+  const map = new Map<number, BookScenes["segmentations"][number]>();
+  for (const segmentation of scenes?.segmentations ?? []) {
+    if (typeof segmentation.start_block_id === "number") {
+      map.set(segmentation.start_block_id, segmentation);
+    }
+  }
+  return map;
+}
+
+/**
  * Walk the tree once, emitting sections and TOC nodes together so the two can't
  * disagree about ordering or about which node a section index refers to.
  */
-export function readBook(structure: EbookStructure): ReadableBook {
+export function readBook(
+  structure: EbookStructure,
+  scenes?: BookScenes | null,
+): ReadableBook {
   const sections: Section[] = [];
+  const segmentations = byStartBlock(scenes);
 
   const walk = (
     nodes: StructureNode[],
@@ -164,6 +226,8 @@ export function readBook(structure: EbookStructure): ReadableBook {
           heading,
           levelType: node.level_type,
           ancestors,
+          // A branch's preamble is not a leaf, so nothing segmented it: one scene.
+          scenes: [paragraphs],
           paragraphs,
           wordCount: countWords(paragraphs),
           startBlockId: node.start_block_id,
@@ -195,6 +259,11 @@ export function readBook(structure: EbookStructure): ReadableBook {
       }
 
       const paragraphs = stripRepeatedHeading(toParagraphs(node.text ?? ""), heading);
+      const sceneGroups = toScenes(
+        segmentations.get(node.start_block_id),
+        paragraphs,
+        heading,
+      );
       const index = sections.length;
       sections.push({
         index,
@@ -202,7 +271,8 @@ export function readBook(structure: EbookStructure): ReadableBook {
         heading,
         levelType: node.level_type,
         ancestors,
-        paragraphs,
+        scenes: sceneGroups,
+        paragraphs: sceneGroups.flat(),
         wordCount: countWords(paragraphs),
         startBlockId: node.start_block_id,
       });

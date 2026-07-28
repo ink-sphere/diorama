@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / ".diorama_data"
 UPLOADS_DIR = DATA_DIR / "uploads"
 STRUCTURES_DIR = DATA_DIR / "structures"
+SCENES_DIR = DATA_DIR / "scenes"
 COVERS_DIR = DATA_DIR / "covers"
 LIBRARY_FILE = DATA_DIR / "library.json"
 
@@ -31,6 +32,7 @@ _lock = asyncio.Lock()
 def _ensure_dirs() -> None:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     STRUCTURES_DIR.mkdir(parents=True, exist_ok=True)
+    SCENES_DIR.mkdir(parents=True, exist_ok=True)
     COVERS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -79,6 +81,18 @@ def structure_path(book_id: str) -> Path:
     return STRUCTURES_DIR / f"{book_id}.json"
 
 
+def scenes_path(book_id: str) -> Path:
+    """Where a book's :class:`~diorama.ebook.scenes.BookScenes` is persisted.
+
+    Separate from ``structures/`` on purpose: scene boundaries are derived from a
+    structure and are the *optional* half of processing — a book whose segmentation
+    pass failed still has a complete, readable structure, and the missing file is what
+    says so. Books processed before scene segmentation existed simply have none.
+    """
+    _ensure_dirs()
+    return SCENES_DIR / f"{book_id}.json"
+
+
 def cached_cover(book_id: str) -> Path | None:
     """The cached cover file for ``book_id``, if one has been extracted before.
 
@@ -108,7 +122,7 @@ async def delete_book(book_id: str) -> bool:
             return False
         _write_all(remaining)
 
-    for path in (upload_path(book_id), structure_path(book_id)):
+    for path in (upload_path(book_id), structure_path(book_id), scenes_path(book_id)):
         path.unlink(missing_ok=True)
     for path in COVERS_DIR.glob(f"{book_id}.*"):
         path.unlink(missing_ok=True)
@@ -124,6 +138,7 @@ async def delete_book(book_id: str) -> bool:
 __all__ = [
     "COVERS_DIR",
     "DATA_DIR",
+    "SCENES_DIR",
     "STRUCTURES_DIR",
     "UPLOADS_DIR",
     "cached_cover",
@@ -131,6 +146,7 @@ __all__ = [
     "delete_book",
     "get_book",
     "list_books",
+    "scenes_path",
     "structure_path",
     "upload_path",
     "upsert_book",

@@ -23,7 +23,12 @@ import weave
 from pydantic import BaseModel, Field
 
 from diorama.models.google_pricing import get_pricing as google_pricing
-from diorama.models.pricing import ModelPricing, PricingTable
+from diorama.models.pricing import (
+    ModelPricing,
+    PricingTable,
+    cost_model_candidates,
+    litellm_pricing,
+)
 from diorama.models.prompt_cache import apply_prompt_caching, extract_cache_tokens
 from diorama.models.providers import GOOGLE, provider_id_for_model
 from diorama.models.usage import (
@@ -36,19 +41,6 @@ from diorama.models.usage import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _cost_model_candidates(model_id: str) -> list[str]:
-    """Model-id forms to try for pricing. litellm doesn't price the ``openrouter/``
-    prefix, but does price the underlying ``openai/gpt-4o-mini`` / ``gpt-4o-mini``."""
-    candidates = [model_id]
-    if model_id.startswith("openrouter/"):
-        candidates.append(model_id[len("openrouter/") :])
-    if "/" in model_id:
-        candidates.append(model_id.rsplit("/", 1)[1])
-    # de-dupe, preserve order
-    seen: set[str] = set()
-    return [c for c in candidates if not (c in seen or seen.add(c))]
 
 
 def _extract_token_counts(usage: Any) -> tuple[int, int]:
@@ -257,7 +249,7 @@ class LiteLLMModel(BaseModel):
         Tries the model id and provider-stripped fallbacks so OpenRouter-prefixed
         models (which litellm doesn't price directly) still report real spend.
         """
-        for model in _cost_model_candidates(self.model_id):
+        for model in cost_model_candidates(self.model_id):
             try:
                 prompt_cost, completion_cost = litellm.cost_per_token(
                     model=model,
@@ -287,11 +279,16 @@ class LiteLLMModel(BaseModel):
         litellm guess exactly as much as a live per-token-type rate.
 
         1. Diorama's own Gemini table, for a direct ``gemini/`` call. Google publishes
-           no machine-readable price list, and litellm's static map knows nothing about
-           cached input — which is most of what a long agent transcript costs.
+           no machine-readable price list, so this is the hand-verified override for
+           the model families it covers.
         2. The live OpenRouter table, which prices each token type separately (cache
            reads are far cheaper than fresh prompt tokens, cache writes dearer).
-        3. litellm's static flat prompt/completion pricing.
+        3. litellm's static cost map, read in full (:func:`litellm_pricing`) — token
+           types priced separately, same as the two above. Anything the hand table
+           hasn't caught up with lands here rather than losing its cache rate: the map
+           tracks new releases faster than a hardcoded dict can.
+        4. ``litellm.cost_per_token()``, flat prompt/completion. Last ditch, for ids
+           the map has no entry for but litellm can still price dynamically.
 
         Each table is keyed on the route the model id names, so a provider added later
         slots in as a step of its own; nothing above this method assumes a single payer.
@@ -317,6 +314,8 @@ class LiteLLMModel(BaseModel):
                 PricingTable.instance().get(self.model_id),
                 "openrouter_live",
             )
+        if pricing is None:
+            pricing, source = litellm_pricing(self.model_id), "litellm_static"
         if pricing is not None:
             breakdown = pricing.cost_breakdown(
                 prompt_tokens=prompt_tokens,

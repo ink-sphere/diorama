@@ -46,7 +46,8 @@ LLMCallStatus = Literal["ok", "retry", "error"]
 #: Which rate table priced the call. ``openrouter_live`` is the live per-token-type
 #: table (cache reads and writes priced separately); ``google_static`` is Diorama's
 #: hand-maintained Gemini table, which Google gives no live equivalent for;
-#: ``litellm_static`` is litellm's flat prompt/completion fallback; ``actual`` means
+#: ``litellm_static`` is litellm's bundled static cost map, read per token type
+#: (:func:`~diorama.models.pricing.litellm_pricing`); ``actual`` means
 #: the route reported its real charge and no estimate was needed; ``unpriced`` means
 #: nothing could price it.
 PricingSource = Literal[

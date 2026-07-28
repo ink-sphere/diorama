@@ -22,10 +22,22 @@ interface PaginationResult {
   pageCount: number;
   /** Width of one column in px — the distance one page turn translates. */
   pageWidth: number;
+  /**
+   * The page each scene opens on, in order — `scenePages[2] === 5` means scene 2
+   * starts on page 5. Measured like the page count is: a scene forces a column break,
+   * so where it landed is a fact about the layout, not something to compute from
+   * character counts.
+   */
+  scenePages: number[];
   /** False until the first successful measurement, to avoid a flash of page 1. */
   measured: boolean;
   /** Force a re-measure. */
   remeasure: () => void;
+}
+
+/** Stable-identity setter: a fresh array every measure would re-fire every consumer. */
+function sameNumbers(a: number[], b: number[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 export function usePagination(
@@ -36,6 +48,7 @@ export function usePagination(
 ): PaginationResult {
   const [pageCount, setPageCount] = useState(1);
   const [pageWidth, setPageWidth] = useState(0);
+  const [scenePages, setScenePages] = useState<number[]>([]);
   const [measured, setMeasured] = useState(false);
   const [nonce, setNonce] = useState(0);
 
@@ -73,8 +86,21 @@ export function usePagination(
       content.style.columnFill = "auto";
 
       const count = Math.max(1, Math.round(content.scrollWidth / width));
+
+      // Which column each scene fell into. `offsetLeft` is measured against the
+      // content box (it is the positioned ancestor) and reports the element's *first*
+      // fragment, so a scene spanning three columns still answers with the one it
+      // opened in. Transforms don't affect it, so the page-turn translate is
+      // invisible here.
+      const starts = Array.from(
+        content.querySelectorAll<HTMLElement>("[data-scene]"),
+        (element) =>
+          Math.min(Math.max(0, Math.round(element.offsetLeft / width)), count - 1),
+      );
+
       setPageWidth(width);
       setPageCount(count);
+      setScenePages((current) => (sameNumbers(current, starts) ? current : starts));
       setMeasured(true);
     };
 
@@ -101,5 +127,5 @@ export function usePagination(
     };
   }, [viewportRef, contentRef, signature, nonce]);
 
-  return { pageCount, pageWidth, measured, remeasure };
+  return { pageCount, pageWidth, scenePages, measured, remeasure };
 }

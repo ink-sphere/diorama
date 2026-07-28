@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getBook, getStructure, saveProgress } from "@/lib/api";
+import { getBook, getScenes, getStructure, saveProgress } from "@/lib/api";
 import { readBook, type ReadableBook } from "@/lib/structure";
 import type { BookRecord } from "@/lib/types";
 import { useMediaQuery } from "@/lib/useMediaQuery";
@@ -18,11 +18,13 @@ import { TocSidebar } from "./TocSidebar";
 /**
  * The reader.
  *
- * Position is a (section, page) pair. The section is stable — it indexes the
- * structure's leaves — but the page is not: it only means something relative to the
- * current type size and viewport, both of which can change mid-read. So the page is
- * always derived from a measurement, and a restored position is *scaled* into the
- * current pagination rather than trusted verbatim.
+ * Position is a (section, scene, page) triple, in descending order of stability. The
+ * section indexes the structure's leaves and the scene indexes that section's scenes;
+ * both survive a change of type size. The page does not — it only means something
+ * relative to the current type size and viewport, both of which can change mid-read.
+ * So the page is always derived from a measurement, and a restored position falls back
+ * through those three: the exact page when the pagination still matches, else the
+ * scene, else a ratio scaled into the new page count.
  */
 export function ReaderView({ bookId }: { bookId: string }) {
   const [record, setRecord] = useState<BookRecord | null>(null);
@@ -49,8 +51,12 @@ export function ReaderView({ bookId }: { bookId: string }) {
 
   /** After a section change, land on its first or last page (arriving backwards). */
   const pendingEdge = useRef<"start" | "end" | null>(null);
-  /** A saved position waiting for the first measurement to be scaled into. */
-  const pendingRestore = useRef<{ page: number; pages: number } | null>(null);
+  /** A saved position waiting for the first measurement to be resolved against. */
+  const pendingRestore = useRef<{
+    page: number;
+    pages: number;
+    scene: number | null;
+  } | null>(null);
 
   const sections = useMemo(() => book?.sections ?? [], [book]);
   const section = sections[sectionIndex] ?? null;
@@ -70,22 +76,36 @@ export function ReaderView({ bookId }: { bookId: string }) {
     contentsOpen,
   ].join("|");
 
-  const { pageCount, pageWidth, measured } = usePagination(
+  const { pageCount, pageWidth, scenePages, measured } = usePagination(
     viewportRef,
     contentRef,
     signature,
   );
 
+  // The scene the current page sits in: the last one that has started by now. -1
+  // until the first measurement, which the plate reads as "nothing to name yet".
+  const sceneIndex = useMemo(() => {
+    let found = -1;
+    for (let index = 0; index < scenePages.length; index += 1) {
+      if (scenePages[index] <= page) found = index;
+      else break;
+    }
+    return found;
+  }, [page, scenePages]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [bookRecord, structure] = await Promise.all([
+        // Scenes are optional — `getScenes` resolves to null for a book that has
+        // none, and the reader paginates continuously as it did before them.
+        const [bookRecord, structure, scenes] = await Promise.all([
           getBook(bookId),
           getStructure(bookId),
+          getScenes(bookId),
         ]);
         if (cancelled) return;
-        const readable = readBook(structure);
+        const readable = readBook(structure, scenes);
         setRecord(bookRecord);
         setBook(readable);
 
@@ -94,7 +114,11 @@ export function ReaderView({ bookId }: { bookId: string }) {
           setSectionIndex(
             Math.min(Math.max(0, progress.section_index), readable.sections.length - 1),
           );
-          pendingRestore.current = { page: progress.page, pages: progress.pages };
+          pendingRestore.current = {
+            page: progress.page,
+            pages: progress.pages,
+            scene: progress.scene_index ?? null,
+          };
         }
       } catch {
         if (!cancelled) {
@@ -120,8 +144,7 @@ export function ReaderView({ bookId }: { bookId: string }) {
     const restore = pendingRestore.current;
     if (restore) {
       pendingRestore.current = null;
-      const ratio = restore.pages > 1 ? restore.page / (restore.pages - 1) : 0;
-      setPage(clamp(Math.round(ratio * (pageCount - 1)), 0, pageCount - 1));
+      setPage(resolveRestore(restore, pageCount, scenePages));
       return;
     }
 
@@ -134,7 +157,7 @@ export function ReaderView({ bookId }: { bookId: string }) {
 
     // A larger type size can shrink the section past the current page.
     setPage((current) => clamp(current, 0, pageCount - 1));
-  }, [measured, pageCount, sectionIndex]);
+  }, [measured, pageCount, scenePages, sectionIndex]);
 
   const goToSection = useCallback(
     (index: number, edge: "start" | "end" = "start") => {
@@ -211,6 +234,7 @@ export function ReaderView({ bookId }: { bookId: string }) {
     const timer = window.setTimeout(() => {
       void saveProgress(bookId, {
         section_index: sectionIndex,
+        scene_index: sceneIndex >= 0 ? sceneIndex : null,
         page,
         pages: pageCount,
         percent,
@@ -219,7 +243,7 @@ export function ReaderView({ bookId }: { bookId: string }) {
       });
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [book, bookId, measured, page, pageCount, percent, sectionIndex]);
+  }, [book, bookId, measured, page, pageCount, percent, sceneIndex, sectionIndex]);
 
   if (loadError) {
     return (
@@ -277,6 +301,7 @@ export function ReaderView({ bookId }: { bookId: string }) {
                   page={page}
                   pageCount={pageCount}
                   pageWidth={pageWidth}
+                  sceneIndex={sceneIndex}
                   measured={measured}
                   viewportRef={viewportRef}
                   contentRef={contentRef}
@@ -329,4 +354,32 @@ function SpreadSkeleton() {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+/**
+ * Turn a saved position into a page in the pagination that now exists.
+ *
+ * Three fallbacks, most faithful first:
+ *
+ * 1. **The same page**, when the section still breaks into the same number of pages —
+ *    the overwhelmingly common case of closing a book and reopening it unchanged,
+ *    where any cleverness would move the reader for no reason.
+ * 2. **The scene's first page.** Scene boundaries don't move when the type size does,
+ *    so this lands on the passage the reader was actually in. The page *within* a long
+ *    scene is lost, but that number no longer refers to anything.
+ * 3. **A scaled ratio**, for a book with no scenes at all.
+ */
+function resolveRestore(
+  saved: { page: number; pages: number; scene: number | null },
+  pageCount: number,
+  scenePages: number[],
+): number {
+  if (saved.pages === pageCount && saved.page < pageCount) {
+    return clamp(saved.page, 0, pageCount - 1);
+  }
+  if (saved.scene !== null && saved.scene >= 0 && saved.scene < scenePages.length) {
+    return clamp(scenePages[saved.scene], 0, pageCount - 1);
+  }
+  const ratio = saved.pages > 1 ? saved.page / (saved.pages - 1) : 0;
+  return clamp(Math.round(ratio * (pageCount - 1)), 0, pageCount - 1);
 }

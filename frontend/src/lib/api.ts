@@ -8,6 +8,7 @@
 
 import type {
   BookRecord,
+  BookScenes,
   BookUsage,
   ConnectionTest,
   EbookStructure,
@@ -65,6 +66,27 @@ export function getStructure(bookId: string): Promise<EbookStructure> {
   return request<EbookStructure>(`/api/books/${bookId}/structure`, {
     cache: "no-store",
   });
+}
+
+/**
+ * A book's scene boundaries, or null when it simply has none.
+ *
+ * 404 is the normal answer for a book shelved before scene segmentation existed, or
+ * one whose segmentation pass failed — neither is a reason to refuse to open the
+ * book, so this resolves to null and the reader falls back to continuous pagination.
+ * Any other failure still throws.
+ */
+export async function getScenes(bookId: string): Promise<BookScenes | null> {
+  try {
+    return await request<BookScenes>(`/api/books/${bookId}/scenes`, {
+      cache: "no-store",
+    });
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 404 || error.status === 409)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export function uploadBook(file: File): Promise<UploadResponse> {

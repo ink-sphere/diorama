@@ -214,6 +214,9 @@ function StatusLine({ book, percent }: { book: BookRecord; percent: number }) {
           <>
             <span className="mx-1.5 text-rule-strong">/</span>
             {book.structure_line}
+            {/* Scenes only when there are some: a book shelved before segmentation
+                existed hasn't been established to have none, it was never measured. */}
+            {book.scene_count ? ` · ${book.scene_count} scenes` : null}
           </>
         ) : null}
         <CostLink book={book} />

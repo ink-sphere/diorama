@@ -13,7 +13,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 BookStatus = Literal["queued", "processing", "ready", "failed"]
-TraceKind = Literal["status", "thinking", "tool", "done", "error"]
+TraceKind = Literal["status", "thinking", "tool", "progress", "done", "error"]
 TraceStatus = Literal["pending", "done", "error"]
 
 
@@ -32,9 +32,17 @@ class ReadingProgress(BaseModel):
     the page within that section, which depends on the reader's current type size and
     viewport, hence ``pages`` alongside it: a client whose pagination no longer matches
     can scale the position instead of jumping to the wrong page.
+
+    ``scene_index`` is the *stable* half of the position. Since a scene always begins a
+    new page, a reader is always inside exactly one of them, and which one doesn't
+    change when the type size does — so reopening a book at a different size can land
+    on the right scene instead of a ratio-scaled guess at the right page. Optional: it
+    is None for a book with no scene segmentation, and for positions saved before
+    scenes existed.
     """
 
     section_index: int = 0
+    scene_index: int | None = None
     page: int = 0
     pages: int = 1
     percent: float = 0.0
@@ -57,18 +65,30 @@ class BookRecord(BaseModel):
     top_level_count: int | None = None
     coverage: Coverage | None = None
     cost_usd: float | None = None
+    #: Total scenes the segmentation pass found across every section. None when the
+    #: book predates scene segmentation or its pass produced nothing — which is not
+    #: the same claim as zero scenes.
+    scene_count: int | None = None
     error: str | None = None
     progress: ReadingProgress | None = None
 
 
 class TraceLine(BaseModel):
-    """One line of the live agent trace, streamed to the shelf card."""
+    """One line of the live agent trace, streamed to the shelf card.
+
+    ``done``/``total`` are set only on ``kind="progress"`` rows, where the frontend
+    draws a bar instead of a log line. Scene segmentation runs once per section — a
+    long book's worth of tool calls that nobody wants to read — so it reports a count
+    rather than a trace, and re-publishing the same ``id`` advances the bar in place.
+    """
 
     id: str
     kind: TraceKind
     status: TraceStatus = "done"
     text: str
     tool: str | None = None
+    done: int | None = None
+    total: int | None = None
     at: float
 
 

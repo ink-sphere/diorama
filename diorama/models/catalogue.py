@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from diorama.models.google_pricing import get_pricing as google_pricing
+from diorama.models.pricing import litellm_pricing
 from diorama.models.providers import GOOGLE, OPENROUTER, to_litellm_id
 
 logger = logging.getLogger(__name__)
@@ -222,7 +223,9 @@ def _parse_google(entry: dict) -> ModelInfo | None:
         return None
 
     litellm_id = to_litellm_id(model_ref, GOOGLE)
-    pricing = google_pricing(litellm_id)
+    # Same cascade the ledger prices a call with (see LiteLLMModel._price_call), so the
+    # picker's label and the cost page can't disagree about whether a model has a rate.
+    pricing = google_pricing(litellm_id) or litellm_pricing(litellm_id)
     context = entry.get("inputTokenLimit")
     lowered = model_ref.lower()
     return ModelInfo(

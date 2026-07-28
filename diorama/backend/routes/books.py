@@ -19,12 +19,14 @@ from diorama.backend.store import (
     delete_book,
     get_book,
     list_books,
+    scenes_path,
     structure_path,
     upload_path,
     upsert_book,
 )
 from diorama.ebook.cover import extract_cover
 from diorama.ebook.models import EbookStructure
+from diorama.ebook.scenes import BookScenes
 
 router = APIRouter(prefix="/api/books", tags=["books"])
 
@@ -80,6 +82,26 @@ async def get_structure(book_id: str) -> EbookStructure:
     if not path.exists():
         raise HTTPException(409, "This book hasn't finished processing yet.")
     return EbookStructure.model_validate_json(path.read_text())
+
+
+@router.get("/{book_id}/scenes")
+async def get_scenes(book_id: str) -> BookScenes:
+    """The book's scene boundaries, one entry per leaf section.
+
+    **404 is a normal answer**, not a fault: a book shelved before scene segmentation
+    existed has none, and so does one whose segmentation pass failed — in both cases
+    the book is complete and readable, it just has no scenes yet. 409 is reserved for
+    a book that is still being processed, where asking again later will work.
+    """
+    book = await get_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found.")
+    path = scenes_path(book_id)
+    if not path.exists():
+        if book.status in ("queued", "processing"):
+            raise HTTPException(409, "This book hasn't finished processing yet.")
+        raise HTTPException(404, "This book has no scene segmentation.")
+    return BookScenes.model_validate_json(path.read_text())
 
 
 @router.get("/{book_id}/cover")

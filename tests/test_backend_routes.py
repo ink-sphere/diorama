@@ -33,6 +33,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(store, "DATA_DIR", tmp_path)
     monkeypatch.setattr(store, "UPLOADS_DIR", tmp_path / "uploads")
     monkeypatch.setattr(store, "STRUCTURES_DIR", tmp_path / "structures")
+    monkeypatch.setattr(store, "SCENES_DIR", tmp_path / "scenes")
     monkeypatch.setattr(store, "COVERS_DIR", tmp_path / "covers")
     monkeypatch.setattr(store, "LIBRARY_FILE", tmp_path / "library.json")
     return TestClient(app)
@@ -113,6 +114,55 @@ def test_structure_is_served_once_extracted(client: TestClient) -> None:
     assert body["coverage"]["covered"] is True
 
 
+SCENES_JSON = """
+{
+  "title": "A Book",
+  "author": "An Author",
+  "segmentations": [
+    {
+      "scenes": [{"start_paragraph": 0, "end_paragraph": 0, "text": "Hello."}],
+      "paragraph_count": 1,
+      "start_block_id": 0,
+      "end_block_id": 1,
+      "level_type": "chapter",
+      "number": "I",
+      "title": "The First",
+      "cost_usd": 0.002
+    }
+  ],
+  "cost_usd": 0.002
+}
+"""
+
+
+def test_scenes_are_409_while_the_book_is_still_processing(client: TestClient) -> None:
+    _shelve(_record(status="processing"))
+
+    assert client.get("/api/books/abc123/scenes").status_code == 409
+    assert client.get("/api/books/missing/scenes").status_code == 404
+
+
+def test_a_ready_book_without_scenes_is_a_plain_404(client: TestClient) -> None:
+    """Books shelved before segmentation existed have none — normal, not an error."""
+    _shelve(_record(status="ready"))
+    store.structure_path("abc123").write_text(STRUCTURE_JSON)
+
+    response = client.get("/api/books/abc123/scenes")
+    assert response.status_code == 404
+    assert "no scene segmentation" in response.json()["detail"]
+
+
+def test_scenes_are_served_once_segmented(client: TestClient) -> None:
+    _shelve(_record(status="ready", scene_count=1))
+    store.scenes_path("abc123").write_text(SCENES_JSON)
+
+    body = client.get("/api/books/abc123/scenes").json()
+    assert body["title"] == "A Book"
+    assert body["segmentations"][0]["title"] == "The First"
+    assert body["segmentations"][0]["scenes"][0]["text"] == "Hello."
+    assert client.get("/api/books/abc123").json()["scene_count"] == 1
+
+
 def test_cover_is_extracted_then_cached(client: TestClient) -> None:
     _shelve(_record())
     _write_epub(store.upload_path("abc123"), with_cover=True)
@@ -157,16 +207,38 @@ def test_progress_round_trips(client: TestClient) -> None:
     assert stored["progress"]["percent"] == pytest.approx(0.42)
 
 
+def test_progress_carries_the_scene_it_was_left_in(client: TestClient) -> None:
+    """The stable half of a position: page numbers move with the type size, scenes don't."""
+    _shelve(_record())
+
+    response = client.patch(
+        "/api/books/abc123/progress",
+        json={"section_index": 2, "scene_index": 3, "page": 1, "pages": 4},
+    )
+    assert response.status_code == 200
+    assert response.json()["progress"]["scene_index"] == 3
+
+    # Absent stays absent rather than defaulting to scene 0 — a book with no scenes,
+    # or a position saved before they existed, must not claim to be in the first one.
+    plain = client.patch(
+        "/api/books/abc123/progress",
+        json={"section_index": 2, "page": 1, "pages": 4},
+    )
+    assert plain.json()["progress"]["scene_index"] is None
+
+
 def test_delete_removes_the_record_and_its_files(client: TestClient) -> None:
     _shelve(_record())
     _write_epub(store.upload_path("abc123"), with_cover=True)
     store.structure_path("abc123").write_text(STRUCTURE_JSON)
+    store.scenes_path("abc123").write_text(SCENES_JSON)
     client.get("/api/books/abc123/cover")
 
     assert client.delete("/api/books/abc123").status_code == 204
     assert client.get("/api/books/abc123").status_code == 404
     assert not store.upload_path("abc123").exists()
     assert not store.structure_path("abc123").exists()
+    assert not store.scenes_path("abc123").exists()
     assert store.cached_cover("abc123") is None
 
     assert client.delete("/api/books/abc123").status_code == 404

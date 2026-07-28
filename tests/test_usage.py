@@ -29,8 +29,9 @@ from diorama.backend.usage_store import (
 from diorama.core.context import ContextCompactor
 from diorama.core.demo_tools import CalculatorTool
 from diorama.core.react import ReactAgent
+from diorama.models.google_pricing import get_pricing as google_pricing
 from diorama.models.litellm_model import LiteLLMModel
-from diorama.models.pricing import ModelPricing, PricingTable
+from diorama.models.pricing import ModelPricing, PricingTable, litellm_pricing
 from diorama.models.usage import (
     LLMCallRecord,
     extract_provider,
@@ -231,6 +232,72 @@ def test_a_direct_gemini_call_is_priced_by_googles_published_rates(
     assert row.pricing_source == "google_static"
     # 200 fresh @ $0.30/M + 800 cached @ $0.075/M + 100 out @ $2.50/M.
     assert row.cost_usd == pytest.approx(200 * 0.30e-6 + 800 * 0.075e-6 + 100 * 2.50e-6)
+
+
+def test_litellm_pricing_reads_the_whole_map_not_just_two_fields() -> None:
+    """``cost_per_token()`` answers prompt+completion only, which loses the cache rate."""
+    rates = litellm_pricing("gemini/gemini-3.6-flash")
+    assert rates is not None
+    assert rates.prompt > 0 and rates.completion > 0
+    # The point of the whole exercise: a cache read is far cheaper than fresh input.
+    assert 0 < rates.cache_read < rates.prompt
+    # Already inside completion_tokens by the time Diorama sees it; see the module
+    # docstring. A non-zero rate here would bill every thinking token twice.
+    assert rates.reasoning == 0.0
+
+
+def test_litellm_pricing_distinguishes_unknown_from_free() -> None:
+    assert litellm_pricing("no-such-model-anywhere") is None
+
+
+def test_a_gemini_model_outside_the_hand_table_still_prices_its_cache_reads(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The regression: a cached transcript billed as if every token were fresh.
+
+    Diorama's hand-maintained Gemini table only covers the families someone has got
+    round to adding. Everything newer used to fall through to a flat prompt/completion
+    fallback, which charges cache reads at the full input rate — for a loader run that
+    replays a growing transcript every turn, that is most of the tokens, and the
+    figure came out several times too high.
+    """
+    monkeypatch.setattr(PricingTable, "get", lambda self, model_id: None)
+    assert google_pricing("gemini/gemini-3.6-flash") is None, (
+        "this test is meaningless if the hand table has since gained this family"
+    )
+    rates = litellm_pricing("gemini/gemini-3.6-flash")
+    assert rates is not None
+
+    rows: list[LLMCallRecord] = []
+    model = LiteLLMModel(model_id="gemini/gemini-3.6-flash", usage_sink=rows.append)
+    model.record_usage(
+        {
+            "prompt_tokens": 60_000,  # includes the cached ones
+            "completion_tokens": 1_000,
+            "cache_read_input_tokens": 50_000,
+        }
+    )
+
+    (row,) = rows
+    assert row.pricing_source == "litellm_static"
+    assert row.cache_read_tokens == 50_000
+    assert row.cost_usd == pytest.approx(
+        10_000 * rates.prompt + 50_000 * rates.cache_read + 1_000 * rates.completion
+    )
+    # And that is strictly cheaper than billing all 60k at the fresh-input rate.
+    assert row.cost_usd < 60_000 * rates.prompt + 1_000 * rates.completion
+
+
+def test_the_hand_table_still_wins_over_litellms_map(monkeypatch: pytest.MonkeyPatch):
+    """It is the hand-verified override; litellm's map is the catch-up layer."""
+    monkeypatch.setattr(PricingTable, "get", lambda self, model_id: None)
+
+    rows: list[LLMCallRecord] = []
+    model = LiteLLMModel(model_id="gemini/gemini-2.5-flash", usage_sink=rows.append)
+    model.record_usage({"prompt_tokens": 1_000, "completion_tokens": 0})
+
+    (row,) = rows
+    assert row.pricing_source == "google_static"
 
 
 def test_gemini_thinking_tokens_are_not_billed_twice(monkeypatch: pytest.MonkeyPatch):

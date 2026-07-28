@@ -17,17 +17,33 @@ from diorama.ebook.models import (
     TocEntry,
 )
 from diorama.ebook.parser import EbookContext
+from diorama.ebook.scenes import (
+    BookScenes,
+    Scene,
+    SceneSegmentation,
+    build_scenes,
+    iter_leaves,
+    split_paragraphs,
+    validate_scenes,
+)
 from diorama.ebook.slicer import DEFAULT_SEGMENT_LENGTH, build_structure, validate_tree
 
 __all__ = [
     "Block",
+    "BookScenes",
     "Coverage",
     "EbookStructure",
+    "Scene",
+    "SceneSegmentation",
     "StructureNode",
     "TocEntry",
     "EbookContext",
     "DEFAULT_SEGMENT_LENGTH",
     "extract_cover",
+    "build_scenes",
     "build_structure",
+    "iter_leaves",
+    "split_paragraphs",
+    "validate_scenes",
     "validate_tree",
 ]

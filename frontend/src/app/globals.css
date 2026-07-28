@@ -160,13 +160,37 @@
     text-align: justify;
   }
 
+  /* Scoped per scene, not per section: a paragraph opening a scene starts a fresh
+     page, where an indent would be reading a break that isn't there. */
   .typeset p:first-of-type {
     text-indent: 0;
   }
 
+  /* A scene is the page unit. Forcing a column break before each one means a scene
+     that outgrows a page simply flows onto the next, while the following scene still
+     opens on a page of its own — the browser does the fitting, as it does for lines. */
+  .typeset .scene-break {
+    break-before: column;
+    -webkit-column-break-before: always;
+  }
+
+  /* Marks the end of a scene, so the whitespace below it reads as a held pause
+     rather than a rendering fault. `break-before: avoid` keeps it on the page it
+     closes instead of stranding it alone at the top of the next. */
+  .typeset .scene-end {
+    margin-top: 1.5em;
+    text-align: center;
+    text-indent: 0;
+    font-size: 0.9em;
+    color: var(--ink-faint);
+    break-before: avoid;
+    -webkit-column-break-before: avoid;
+  }
+
   /* Drop cap on the section's opening paragraph only — set via ::first-letter so
-     it stays correct wherever pagination lands. */
-  .typeset[data-opening="true"] p:first-of-type::first-letter {
+     it stays correct wherever pagination lands. Scoped to the first scene, or every
+     scene would open with one. */
+  .typeset[data-opening="true"] [data-scene="0"] p:first-of-type::first-letter {
     float: left;
     font-size: 3.1em;
     line-height: 0.82;

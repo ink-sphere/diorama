@@ -1,17 +1,28 @@
-"""OpenRouter dynamic pricing: fetch, cache, and compute per-token-type cost.
+"""Rate tables: OpenRouter's live pricing, and litellm's static cost map.
 
-OpenRouter exposes live per-model pricing at `/api/v1/models` (USD per token for
-`prompt`/`completion`, per request for `request`, plus cache read/write and
-reasoning rates). litellm's static `cost_per_token` often can't price an
-`openrouter/<vendor>/<model>` id and ignores the cheaper cache-read / pricier
-cache-write rates, so we fetch the live table ourselves and price each token
-type at its own rate.
+Two sources of per-token rates live here, both returning the same
+:class:`ModelPricing`:
 
-The table is fetched once and cached to disk with a TTL (default 24h), so normal
-runs pay no network cost. Everything here is best-effort: if the table can't be
-loaded, :func:`PricingTable.get` returns `None` and callers fall back to
-litellm. Pure in-memory lookups never block the async hot path; warm the table
-explicitly at startup with :meth:`PricingTable.warm`.
+* :class:`PricingTable` fetches OpenRouter's live per-model pricing from
+  ``/api/v1/models`` (USD per token for ``prompt``/``completion``, per request for
+  ``request``, plus cache read/write and reasoning rates), cached to disk with a TTL
+  (default 24h) so normal runs pay no network cost. Pure in-memory lookups never
+  block the async hot path; warm it explicitly at startup with
+  :meth:`PricingTable.warm`.
+* :func:`litellm_pricing` reads litellm's bundled static cost map, which covers
+  models OpenRouter never sees — every direct ``gemini/`` call, for one.
+
+**Read the whole map, not just two fields of it.** ``litellm.cost_per_token()``
+answers with prompt and completion cost only, so pricing a call through it silently
+values every cache-read token at zero. For an agent loop that replays a growing
+transcript on each turn, cache reads are most of the tokens — the ebook loader's
+long runs were under-billed by exactly that amount. The map itself has carried
+``cache_read_input_token_cost`` for a while; :func:`litellm_pricing` reads it, along
+with the cache-write rate, so the fallback prices each token type at its own rate
+like the other two tables do.
+
+Everything here is best-effort: an unavailable table returns ``None`` and the caller
+falls through to the next one.
 """
 
 from __future__ import annotations
@@ -118,6 +129,60 @@ def normalize_model_id(model_id: str) -> str:
     if mid.startswith("openrouter/"):
         return mid[len("openrouter/") :]
     return mid
+
+
+def cost_model_candidates(model_id: str) -> list[str]:
+    """Model-id forms to try when looking a model up in litellm's tables.
+
+    litellm doesn't know the ``openrouter/`` prefix but does know the underlying
+    ``openai/gpt-4o-mini`` / ``gpt-4o-mini``, so try the id, then the stripped route,
+    then the bare name — in that order, de-duplicated.
+    """
+    candidates = [model_id]
+    if model_id.startswith("openrouter/"):
+        candidates.append(model_id[len("openrouter/") :])
+    if "/" in model_id:
+        candidates.append(model_id.rsplit("/", 1)[1])
+    seen: set[str] = set()
+    return [c for c in candidates if not (c in seen or seen.add(c))]
+
+
+def litellm_pricing(model_id: str) -> ModelPricing | None:
+    """Per-token rates for ``model_id`` from litellm's static cost map, or None.
+
+    Unlike ``litellm.cost_per_token()`` this reads the cache-read and cache-write
+    rates too, so a cached agent transcript isn't billed as if every replayed token
+    were fresh input (see the module docstring).
+
+    ``reasoning`` is deliberately left at 0.0. litellm folds ``thoughtsTokenCount``
+    into ``completion_tokens`` before Diorama sees it, so pricing the map's
+    ``output_cost_per_reasoning_token`` on top would bill every thinking token twice.
+
+    Returns:
+        ModelPricing | None: The rates, or None when the map has no usable entry —
+            an entry with no input *and* no output rate counts as no entry, since
+            "priced at zero" and "not priced" are different claims.
+    """
+    try:
+        import litellm
+    except ImportError:  # pragma: no cover — litellm is a hard dependency
+        return None
+
+    for candidate in cost_model_candidates(model_id or ""):
+        entry = litellm.model_cost.get(candidate)
+        if not isinstance(entry, dict):
+            continue
+        prompt = _f(entry.get("input_cost_per_token"))
+        completion = _f(entry.get("output_cost_per_token"))
+        if not prompt and not completion:
+            continue
+        return ModelPricing(
+            prompt=prompt,
+            completion=completion,
+            cache_read=_f(entry.get("cache_read_input_token_cost")),
+            cache_write=_f(entry.get("cache_creation_input_token_cost")),
+        )
+    return None
 
 
 class PricingTable:

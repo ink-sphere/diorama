@@ -43,7 +43,11 @@ AGENT_ID = "ebook_loader"
 
 _MAX_READ_BLOCKS = 300
 _PREVIEW_CHARS = 200
-_DEFAULT_MODEL_ID = "openrouter/openai/gpt-4o-mini"
+#: Baseline for an agent constructed without a ``model_id`` (a script, a test).
+#: Mirrors the OpenRouter entry in this agent's :data:`diorama.backend.settings.AGENTS`
+#: defaults — the backend resolves per provider and passes an id explicitly, so this
+#: is only ever the no-backend fallback.
+_DEFAULT_MODEL_ID = "openrouter/google/gemini-3.6-flash"
 
 # diorama.core.context estimates tokens as chars/4, which undercounts transcripts
 # dense with "[Block N]" markers and archaic/foreign punctuation — exactly this
