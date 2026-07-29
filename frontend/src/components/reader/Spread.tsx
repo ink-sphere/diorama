@@ -162,7 +162,9 @@ function PlatePage({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
-        className="flex w-full max-w-[26rem] flex-col items-center"
+        // The percentage keeps the plate at the proportion it has always had on a
+        // normal window; the rem cap stops it ballooning on a very wide one.
+        className="flex w-full max-w-[min(32rem,72%)] flex-col items-center"
       >
         <div className="relative aspect-[4/5] w-full border border-rule p-2">
           <div className="flex h-full w-full flex-col items-center justify-center gap-4 border border-rule bg-shell/40">

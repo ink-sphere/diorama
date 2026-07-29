@@ -293,7 +293,11 @@ export function ReaderView({ bookId }: { bookId: string }) {
 
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 px-4 pt-4 pb-1 sm:px-8 sm:pt-6">
-            <div className="mx-auto h-full w-full max-w-[86rem]">
+            {/* The sheet takes the whole width it is given — the text page is
+                capped by `prefs.measure` and the plate by its own frame, so the
+                room a wide window offers becomes margin on the paper rather
+                than blank desk around it. */}
+            <div className="mx-auto h-full w-full">
               {section ? (
                 <Spread
                   section={section}
