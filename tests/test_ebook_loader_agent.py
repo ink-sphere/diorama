@@ -214,9 +214,10 @@ async def test_load_retries_after_rejected_structure():
 
 
 async def test_load_raises_when_model_never_submits():
-    model = FakeModel(
-        [_response(content="I looked around but found nothing to report.")]
-    )
+    """A model that keeps declining is nudged, then the run gives up rather than
+    claiming success. Three replies: the first quiet turn plus both nudges."""
+    refusal = "I looked around but found nothing to report."
+    model = FakeModel([_response(content=refusal) for _ in range(3)])
 
     agent = EbookLoaderAgent(model=model)
     with pytest.raises(EbookLoaderError, match="did not submit a valid structure"):
@@ -229,7 +230,8 @@ async def test_load_raises_on_max_iterations_without_submission():
     )
 
     agent = EbookLoaderAgent(model=model, max_iterations=2)
-    with pytest.raises(EbookLoaderError, match="max_iterations"):
+    # Phrased for whoever reads it on the shelf, not for whoever wrote the loop.
+    with pytest.raises(EbookLoaderError, match="hit its turn limit"):
         await agent.load(ALICE)
 
 

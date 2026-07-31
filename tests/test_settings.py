@@ -25,6 +25,8 @@ from diorama.backend.settings import (
     resolve_agent_runtime,
     resolve_api_key,
     resolve_model_id,
+    resolve_search_key,
+    resolve_search_provider,
     save_settings,
 )
 from diorama.models.catalogue import ModelInfo, list_google_models, list_models
@@ -55,6 +57,9 @@ def settings_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("DIORAMA_LOADER_MODEL_ID", raising=False)
     monkeypatch.delenv("DIORAMA_SCENE_MODEL_ID", raising=False)
+    monkeypatch.delenv("DIORAMA_RESEARCH_MODEL_ID", raising=False)
+    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     return path
 
 
@@ -376,6 +381,7 @@ def test_get_settings_on_a_fresh_install(client: TestClient) -> None:
     assert [a["id"] for a in body["agents"]] == [
         "ebook_loader",
         "ebook_scene_segmentation",
+        "literary_research",
     ]
     assert all(a["model_id"] == DEFAULT_MODEL for a in body["agents"])
     assert all(a["provider"] == OPENROUTER for a in body["agents"])
@@ -622,6 +628,7 @@ def test_warnings_are_scoped_to_the_provider_under_test(
             "agents": {
                 "ebook_loader": GEMINI_MODEL,
                 "ebook_scene_segmentation": GEMINI_MODEL,
+                "literary_research": GEMINI_MODEL,
             }
         },
     )
@@ -953,3 +960,119 @@ def _stub_google_fetch(
 
     monkeypatch.setattr("httpx.Client", _Client)
     return calls
+
+
+# --------------------------------------------------------------------------- #
+# Web search credentials
+# --------------------------------------------------------------------------- #
+EXA_KEY = "exa-0123456789abcdef0123456789abcdef"
+TAVILY_KEY = "tvly-0123456789abcdef0123456789abcd"
+
+
+def test_no_search_key_anywhere_is_a_supported_state(settings_file: Path) -> None:
+    """Research still runs without one — from the book's text alone."""
+    assert resolve_search_provider(DioramaSettings()) is None
+
+
+async def test_a_search_key_resolves_settings_then_env(
+    settings_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EXA_API_KEY", "from-env")
+    assert resolve_search_key(DioramaSettings(), "exa") == ("from-env", "env")
+
+    saved = await save_settings(SettingsUpdate(search_api_keys={"exa": EXA_KEY}))
+    assert resolve_search_key(saved, "exa") == (EXA_KEY, "settings")
+
+
+async def test_the_active_search_provider_is_the_first_one_with_a_key(
+    settings_file: Path,
+) -> None:
+    """Mirrors WebSearchTool's own detection order, so "In use" tells the truth."""
+    tavily_only = await save_settings(
+        SettingsUpdate(search_api_keys={"tavily": TAVILY_KEY})
+    )
+    assert resolve_search_provider(tavily_only) == ("tavily", TAVILY_KEY)
+
+    both = await save_settings(SettingsUpdate(search_api_keys={"exa": EXA_KEY}))
+    assert resolve_search_provider(both) == ("exa", EXA_KEY)
+
+
+async def test_search_keys_are_masked_in_the_view(settings_file: Path) -> None:
+    saved = await save_settings(SettingsUpdate(search_api_keys={"exa": EXA_KEY}))
+    view = build_view(saved)
+
+    exa = next(p for p in view.search_providers if p.id == "exa")
+    assert exa.api_key_configured is True
+    assert exa.active is True
+    assert exa.api_key_masked == mask_key(EXA_KEY)
+    assert EXA_KEY not in view.model_dump_json()
+
+    tavily = next(p for p in view.search_providers if p.id == "tavily")
+    assert tavily.api_key_configured is False
+    assert tavily.active is False
+
+
+async def test_an_empty_search_key_clears_it(settings_file: Path) -> None:
+    await save_settings(SettingsUpdate(search_api_keys={"exa": EXA_KEY}))
+    cleared = await save_settings(SettingsUpdate(search_api_keys={"exa": ""}))
+    assert "exa" not in cleared.search_api_keys
+
+
+async def test_an_omitted_search_key_is_left_alone(settings_file: Path) -> None:
+    """Sparse writes: the form only ever held a mask, so absent means unchanged."""
+    await save_settings(SettingsUpdate(search_api_keys={"exa": EXA_KEY}))
+    after = await save_settings(SettingsUpdate(agents={"ebook_loader": ""}))
+    assert after.search_api_keys["exa"] == EXA_KEY
+
+
+def test_saving_an_unknown_search_provider_is_rejected(client: TestClient) -> None:
+    response = client.put("/api/settings", json={"search_api_keys": {"bing": "x"}})
+    assert response.status_code == 400
+
+
+def test_the_settings_route_reports_search_providers(client: TestClient) -> None:
+    body = client.get("/api/settings").json()
+    assert [p["id"] for p in body["search_providers"]] == ["exa", "tavily"]
+    assert all(p["api_key_configured"] is False for p in body["search_providers"])
+
+
+def test_a_sightless_model_warns_only_for_the_agent_that_needs_eyes(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The research agent looks at illustrations; a text-only model can't."""
+    _stub_key_check(monkeypatch, status_code=200, payload={"data": {}})
+    blind = ModelInfo(
+        id=DEFAULT_MODEL,
+        provider=OPENROUTER,
+        provider_model_id="google/gemini-3.6-flash",
+        name="Blind Model",
+        vendor="google",
+        context_length=1000,
+        prompt_price=0.0,
+        completion_price=0.0,
+        pricing_known=True,
+        supports_tools=True,
+        supports_vision=False,
+    )
+    monkeypatch.setattr(settings_routes, "list_models", lambda **_: [blind])
+
+    warnings = client.post("/api/settings/test", json={"api_key": "good"}).json()[
+        "warnings"
+    ]
+
+    assert any("Literary research" in w and "images" in w for w in warnings)
+    # Every agent runs on this model, but only one of them needs to see.
+    assert not any("Ebook loader" in w for w in warnings)
+
+
+def test_an_undeclared_modality_does_not_warn(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Warning on absent evidence would cry wolf on every under-described model."""
+    _stub_key_check(monkeypatch, status_code=200, payload={"data": {}})
+    monkeypatch.setattr(
+        settings_routes, "list_models", lambda **_: [_openrouter_model(DEFAULT_MODEL)]
+    )
+
+    body = client.post("/api/settings/test", json={"api_key": "good"}).json()
+    assert not any("images" in w for w in body["warnings"])

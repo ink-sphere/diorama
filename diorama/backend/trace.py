@@ -32,6 +32,15 @@ _TOOL_VERBS: dict[str, str] = {
     "search_blocks": "Searching the text",
     "read_blocks": "Reading blocks",
     "submit_structure": "Submitting the discovered structure",
+    # Literary research. The three submissions read as milestones rather than moves,
+    # because that is what they are — the modal pins them as a checklist beside the
+    # scrolling trace, so the same rows carry both the story and the progress.
+    "get_outline": "Reviewing the book's structure",
+    "web_search": "Searching the web",
+    "view_image": "Studying an illustration",
+    "submit_author_profile": "Writing the author profile",
+    "submit_world_dossier": "Compiling the world dossier",
+    "submit_style_bibles": "Proposing the art directions",
 }
 
 # These tools return raw JSON (block lists, TOC entries) that the model reads but a
@@ -44,6 +53,13 @@ _TOOL_DONE_VERBS: dict[str, str] = {
     "list_headings": "Found the chapter headings",
     "search_blocks": "Searched the text",
     "read_blocks": "Read blocks",
+    "get_outline": "Reviewed the book's structure",
+    # A search result is a wall of scraped page text and an image fetch returns the
+    # picture itself — neither is a trace row. The submissions stay absent for the
+    # same reason submit_structure does: their own result text is already a human
+    # sentence ("Style bibles accepted (2); …") worth showing verbatim.
+    "web_search": "Searched the web",
+    "view_image": "Studied an illustration",
 }
 
 
@@ -60,7 +76,7 @@ def _describe_call(tool_name: str, args: dict[str, Any]) -> str:
         and "end_block_id" in args
     ):
         return f"{verb} {int(args['start_block_id'])}–{int(args['end_block_id'])}"
-    if tool_name == "search_blocks" and args.get("query"):
+    if tool_name in ("search_blocks", "web_search") and args.get("query"):
         return f'{verb} for "{_truncate(str(args["query"]), 60)}"'
     return verb
 
@@ -124,12 +140,24 @@ def event_to_trace_line(event: AgentEvent) -> TraceLine | None:
         return None
 
     if isinstance(event, RetryEvent):
+        # A zero delay is the empty-reply retry, not a backoff: the provider answered
+        # fine, it just answered with nothing, so there is nothing to wait out and
+        # "retrying in 0s" would read as a stall rather than an immediate second ask.
+        if event.delay_seconds <= 0:
+            text = (
+                f"{event.reason.capitalize()} — asking again "
+                f"({event.attempt}/{event.max_attempts})"
+            )
+        else:
+            text = (
+                f"A request hiccupped — retrying in {event.delay_seconds:.0f}s "
+                f"(attempt {event.attempt}/{event.max_attempts})"
+            )
         return TraceLine(
             id=f"retry-{event.attempt}-{now}",
             kind="status",
             status="pending",
-            text=f"A request hiccupped — retrying in {event.delay_seconds:.0f}s "
-            f"(attempt {event.attempt}/{event.max_attempts})",
+            text=text,
             at=now,
         )
 

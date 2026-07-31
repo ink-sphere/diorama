@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from diorama.agents.ebook_loader import EbookLoaderAgent, EbookLoaderError
 from diorama.agents.ebook_scene_segmentation import EbookSceneSegmentationAgent
 from diorama.backend.models import Coverage, TraceLine
+from diorama.backend.runs import DONE, RunLog
 from diorama.backend.settings import resolve_agent_runtime
 from diorama.backend.store import (
     get_book,
@@ -79,46 +80,11 @@ def _user_facing_error(exc: Exception) -> str:
     return "Something went wrong while reading this book."
 
 
-# End-of-stream sentinel pushed to every subscriber queue once a run settles.
-DONE = object()
+#: One book's in-flight (or finished) processing run. The replay-then-tail mechanics
+#: live in :mod:`diorama.backend.runs`, shared with the research pass.
+_BookRun = RunLog
 
-
-class _BookRun:
-    """Shared state for one book's in-flight (or finished) processing run."""
-
-    def __init__(self) -> None:
-        self.log: list[TraceLine] = []
-        self.subscribers: list[asyncio.Queue] = []
-        self.finished = False
-        self.task: asyncio.Task | None = None
-
-    def subscribe(self) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue()
-        for line in self.log:
-            queue.put_nowait(line)
-        if self.finished:
-            queue.put_nowait(DONE)
-        else:
-            self.subscribers.append(queue)
-        return queue
-
-    def unsubscribe(self, queue: asyncio.Queue) -> None:
-        if queue in self.subscribers:
-            self.subscribers.remove(queue)
-
-    def publish(self, line: TraceLine) -> None:
-        self.log.append(line)
-        for queue in self.subscribers:
-            queue.put_nowait(line)
-
-    def close(self) -> None:
-        self.finished = True
-        for queue in self.subscribers:
-            queue.put_nowait(DONE)
-        self.subscribers.clear()
-
-
-_runs: dict[str, _BookRun] = {}
+_runs: dict[str, RunLog] = {}
 
 
 def _now_iso() -> str:
@@ -164,7 +130,7 @@ def _scene_progress_line(
 
 
 async def _segment_scenes(
-    book_id: str, run_id: str, structure: EbookStructure, run: _BookRun
+    book_id: str, run_id: str, structure: EbookStructure, run: RunLog
 ) -> BookScenes:
     """Segment every leaf section into scenes, publishing one live progress row.
 
@@ -237,7 +203,7 @@ async def _segment_scenes(
     return book_scenes
 
 
-async def _run_book(book_id: str, run: _BookRun) -> None:
+async def _run_book(book_id: str, run: RunLog) -> None:
     book = await get_book(book_id)
     if book is None:
         run.close()
@@ -386,11 +352,11 @@ def _structure_line(breakdown: dict[str, int]) -> str:
     return " · ".join(parts) if parts else "Structure extracted"
 
 
-def ensure_started(book_id: str) -> _BookRun:
+def ensure_started(book_id: str) -> RunLog:
     """Start (or return the existing) background run for ``book_id``."""
     run = _runs.get(book_id)
     if run is None:
-        run = _BookRun()
+        run = RunLog()
         _runs[book_id] = run
         run.task = asyncio.create_task(_run_book(book_id, run))
     return run
@@ -401,4 +367,4 @@ def reset(book_id: str) -> None:
     _runs.pop(book_id, None)
 
 
-__all__ = ["DONE", "ensure_started", "reset"]
+__all__ = ["DONE", "RunLog", "ensure_started", "reset"]

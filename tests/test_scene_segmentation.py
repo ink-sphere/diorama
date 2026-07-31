@@ -397,7 +397,9 @@ async def test_min_paragraphs_zero_always_runs_the_agent():
 
 
 async def test_segment_node_raises_when_the_run_ends_without_a_submission():
-    model = FakeModel([_response(content="I think this is all one scene, really.")])
+    # Three replies: the first quiet turn, plus the two completion-guard nudges.
+    refusal = "I think this is all one scene, really."
+    model = FakeModel([_response(content=refusal) for _ in range(3)])
 
     with pytest.raises(SceneSegmentationError, match="chapter 1: The Arrival"):
         await EbookSceneSegmentationAgent(model=model).segment_node(_leaf())

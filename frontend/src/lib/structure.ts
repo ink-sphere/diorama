@@ -7,11 +7,30 @@
  * this walk invalidates every saved position.
  */
 
-import type { BookScenes, EbookStructure, StructureNode } from "./types";
+import type {
+  AuthorProfile,
+  BookScenes,
+  EbookStructure,
+  StructureNode,
+} from "./types";
+
+/**
+ * The `startBlockId` of the synthetic About the Author section.
+ *
+ * Real block ids start at 0, so a negative id can never collide with a section's or
+ * with a segmentation key — and the pagination signature, which keys off this, sees a
+ * genuinely distinct section rather than a duplicate of block 0.
+ */
+const BACK_MATTER_BLOCK_ID = -1;
 
 export interface Section {
   /** Depth-first leaf index; matches `ReadingProgress.section_index`. */
   index: number;
+  /**
+   * Body text, or generated back matter. Back matter is the book *about* the book —
+   * it gets no plate, because the frame is for the story.
+   */
+  kind: "body" | "back-matter";
   /** Short chrome label, e.g. "Chapter IV". */
   label: string;
   /** Full display heading, e.g. "Chapter IV: The Rabbit Sends in a Little Bill". */
@@ -197,6 +216,7 @@ function byStartBlock(scenes: BookScenes | null | undefined) {
 export function readBook(
   structure: EbookStructure,
   scenes?: BookScenes | null,
+  authorProfile?: AuthorProfile | null,
 ): ReadableBook {
   const sections: Section[] = [];
   const segmentations = byStartBlock(scenes);
@@ -222,6 +242,7 @@ export function readBook(
         const index = sections.length;
         sections.push({
           index,
+          kind: "body",
           label,
           heading,
           levelType: node.level_type,
@@ -267,6 +288,7 @@ export function readBook(
       const index = sections.length;
       sections.push({
         index,
+        kind: "body",
         label,
         heading,
         levelType: node.level_type,
@@ -288,11 +310,66 @@ export function readBook(
     });
 
   const toc = walk(structure.root, [], 0, "");
+  const backMatter = aboutTheAuthor(authorProfile, sections.length);
+  if (backMatter) {
+    sections.push(backMatter.section);
+    toc.push(backMatter.tocNode);
+  }
+
   return {
     title: structure.title,
     author: structure.author ?? null,
     sections,
     toc,
+  };
+}
+
+/**
+ * The generated "About the Author" section, when research has produced a profile.
+ *
+ * **Appended, never inserted.** `ReadingProgress.section_index` indexes this walk, so
+ * a section added after the last leaf leaves every saved position valid — whether the
+ * research happened before or after the position was saved. Anything placed mid-walk
+ * would silently move every reader who had passed it.
+ *
+ * Absence is silent: a book nobody has researched simply ends at its last chapter,
+ * with no stub page advertising the feature.
+ */
+function aboutTheAuthor(
+  profile: AuthorProfile | null | undefined,
+  index: number,
+): { section: Section; tocNode: TocNode } | null {
+  if (!profile) return null;
+  const paragraphs = [
+    ...toParagraphs(profile.bio_prose ?? ""),
+    ...toParagraphs(profile.work_context_prose ?? ""),
+  ];
+  if (paragraphs.length === 0) return null;
+
+  const heading = "About the Author";
+  return {
+    section: {
+      index,
+      kind: "back-matter",
+      label: heading,
+      heading,
+      levelType: "back_matter",
+      ancestors: [],
+      // One scene: back matter is continuous prose, and nothing segmented it.
+      scenes: [paragraphs],
+      paragraphs,
+      wordCount: countWords(paragraphs),
+      startBlockId: BACK_MATTER_BLOCK_ID,
+    },
+    tocNode: {
+      key: "back-matter",
+      heading,
+      label: heading,
+      levelType: "back_matter",
+      depth: 0,
+      sectionIndex: index,
+      children: [],
+    },
   };
 }
 

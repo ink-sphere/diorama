@@ -9,10 +9,13 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Response, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from diorama.backend import research as research_runs
 from diorama.backend.models import BookRecord, ReadingProgress, UploadResponse
 from diorama.backend.processing import DONE, ensure_started, reset
+from diorama.backend.research import ResearchRecord, StyleDirection
 from diorama.backend.store import (
     cached_cover,
     cover_path,
@@ -104,6 +107,124 @@ async def get_scenes(book_id: str) -> BookScenes:
     return BookScenes.model_validate_json(path.read_text())
 
 
+class StyleChoice(BaseModel):
+    """Which of the two candidate art directions the reader picked."""
+
+    direction: StyleDirection
+
+
+@router.get("/{book_id}/research")
+async def get_research(book_id: str) -> ResearchRecord:
+    """A book's moodboard artifacts, if anyone has researched it.
+
+    **404 is the normal answer**, not a fault: research is lazy, so most books have
+    none until someone opens their moodboard. There is no 409 here — "in flight" is a
+    fact about the stream, not the record, and a record only exists once a run settles.
+    """
+    book = await get_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found.")
+    record = research_runs.read_record(book_id)
+    if record is None:
+        raise HTTPException(404, "This book hasn't been researched yet.")
+    return record
+
+
+@router.post("/{book_id}/research/retry", status_code=202)
+async def retry_research(book_id: str) -> Response:
+    """Research this book again, from scratch.
+
+    A retry is always a **full** re-run rather than a resume of the missing artifacts:
+    the agent has no mid-run resume, and a dossier from one run with style bibles from
+    another are not written to fit each other.
+
+    The run starts here rather than on the next stream open, because the stream
+    short-circuits for a book that already has a complete record — retrying a finished
+    moodboard would otherwise do nothing at all. A run already in flight is left to
+    finish. The old record survives a failed retry, and the old run's ledger entries
+    stay either way, exactly like an upload retry.
+    """
+    book = await get_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found.")
+    if not upload_path(book_id).exists():
+        raise HTTPException(409, "The original upload is no longer available.")
+    research_runs.restart(book_id)
+    return Response(status_code=202)
+
+
+@router.patch("/{book_id}/research/style")
+async def choose_style(book_id: str, choice: StyleChoice) -> ResearchRecord:
+    """Set the active style bible. A metadata edit, never a re-run."""
+    record = research_runs.read_record(book_id)
+    if record is None:
+        raise HTTPException(404, "This book hasn't been researched yet.")
+    if record.style_bibles is None:
+        raise HTTPException(409, "This book's research has no art directions yet.")
+    if choice.direction == "traditional" and not record.has_traditional:
+        raise HTTPException(
+            422,
+            "This book has no traditional art direction — nothing in its "
+            "illustration history to draw one from.",
+        )
+    record.chosen_direction = choice.direction
+    return research_runs.write_record(record)
+
+
+@router.get("/{book_id}/research/stream")
+async def stream_research(book_id: str) -> StreamingResponse:
+    """The research run's live trace, starting the run if it isn't going yet.
+
+    Opening the moodboard *is* the request to research, so this endpoint starts work
+    as a side effect — but only when there is work to do. A book with a complete
+    record replays a single already-done line and closes, which keeps a reopened
+    modal, a second tab and a page refresh from ever racing to start rival runs.
+    """
+    book = await get_book(book_id)
+    if book is None:
+        raise HTTPException(404, "Book not found.")
+    if not upload_path(book_id).exists():
+        raise HTTPException(409, "The original upload is no longer available.")
+
+    record = research_runs.read_record(book_id)
+
+    async def event_source():
+        # A complete record and no live run means there is nothing to watch. A
+        # *partial* record does not short-circuit: the reader may have just asked to
+        # retry, and the run is what they are here to see.
+        if (
+            record is not None
+            and record.status == "complete"
+            and not research_runs.is_running(book_id)
+        ):
+            payload = {
+                "id": f"research-replay-{book_id}",
+                "kind": "done",
+                "status": "done",
+                "text": "Already researched.",
+                "at": 0,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+            return
+
+        run = research_runs.ensure_started(book_id)
+        queue = run.subscribe()
+        try:
+            while True:
+                item = await queue.get()
+                if item is research_runs.DONE:
+                    break
+                yield f"data: {item.model_dump_json()}\n\n"
+        finally:
+            run.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/{book_id}/cover")
 async def get_cover(book_id: str) -> Response:
     """The EPUB's own cover image, extracted on first request and then cached.
@@ -155,6 +276,7 @@ async def update_progress(book_id: str, progress: ReadingProgress) -> BookRecord
 @router.delete("/{book_id}", status_code=204)
 async def remove_book(book_id: str) -> Response:
     reset(book_id)
+    research_runs.reset(book_id)
     if not await delete_book(book_id):
         raise HTTPException(404, "Book not found.")
     return Response(status_code=204)

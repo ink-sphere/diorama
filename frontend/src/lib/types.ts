@@ -166,8 +166,29 @@ export interface AgentView {
   provider?: Provider | null;
 }
 
+/**
+ * A web-search provider, for the research agent's `WebSearchTool`.
+ *
+ * `active` marks the one a run would actually call — the first with a usable key.
+ * None configured is a supported state: research then works from the book's text
+ * alone, since the web is enrichment here rather than a source of record.
+ */
+export interface SearchProviderView {
+  id: string;
+  name: string;
+  api_key_env: string;
+  console_url: string;
+  key_prefix_hint: string;
+  blurb: string;
+  api_key_configured: boolean;
+  api_key_masked?: string | null;
+  api_key_source: ValueSource;
+  active: boolean;
+}
+
 export interface SettingsView {
   providers: ProviderView[];
+  search_providers: SearchProviderView[];
   agents: AgentView[];
 }
 
@@ -180,6 +201,8 @@ export interface SettingsView {
 export interface SettingsUpdate {
   /** provider id → API key; "" clears the saved key. */
   api_keys?: Record<string, string>;
+  /** search provider id → API key; "" clears it. */
+  search_api_keys?: Record<string, string>;
   /** agent id → litellm model id; "" resets that agent to inherit. */
   agents?: Record<string, string>;
 }
@@ -198,6 +221,8 @@ export interface CatalogueEntry {
   /** False when no rate is known — 0.0 then means "no idea", not "free". */
   pricing_known: boolean;
   supports_tools: boolean;
+  /** True unless the catalogue positively declared the model text-only. */
+  supports_vision: boolean;
 }
 
 /** Why one provider's slice of the picker is (or isn't) populated. */
@@ -374,4 +399,135 @@ export interface BookUsage {
   by_kind: GroupTotals[];
   runs: RunGroup[];
   calls: LLMCallRecord[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Literary research — mirrors `diorama/agents/literary_research_agent.py` and  */
+/* the `ResearchRecord` envelope in `diorama/backend/research.py`.              */
+/* -------------------------------------------------------------------------- */
+
+export type StyleDirection = "original" | "traditional";
+export type ResearchStatus = "complete" | "partial";
+
+/** Where an entry came from: blocks of the book, and pages of the web. */
+export interface Evidence {
+  block_ids: number[];
+  urls: string[];
+}
+
+export interface VisualTraditionEntry {
+  name: string;
+  kind: "illustrator" | "edition" | "adaptation" | "other";
+  medium?: string | null;
+  description: string;
+  sources: string[];
+}
+
+export interface AuthorProfile {
+  name: string;
+  birth_date?: string | null;
+  death_date?: string | null;
+  /** Oeuvre-level prose — the dust-jacket flap, cacheable per author. */
+  bio_prose: string;
+  /** This book's story-behind-the-story. */
+  work_context_prose: string;
+  publication_year?: number | null;
+  authorship_period?: string | null;
+  composition_context?: string | null;
+  visual_tradition: VisualTraditionEntry[];
+  evidence: Evidence;
+}
+
+/** What a period looks like. Light sources get their own field: they change every plate. */
+export interface VisualMarkers {
+  clothing?: string | null;
+  technology?: string | null;
+  transport?: string | null;
+  light_sources?: string | null;
+  architecture?: string | null;
+}
+
+export interface TimePeriod {
+  label: string;
+  /** When the book is set, versus when it was written — usually not the same. */
+  kind: "story" | "authorship";
+  span?: string | null;
+  summary?: string | null;
+  visual_markers: VisualMarkers;
+  evidence: Evidence;
+}
+
+export interface LocationProfile {
+  name: string;
+  existence: "real" | "fictional" | "real_but_altered";
+  description: string;
+  visual_notes?: string | null;
+  /** Labels of the `TimePeriod`s this place appears in. */
+  periods: string[];
+  evidence: Evidence;
+}
+
+/** A social group and how it dresses — milieu wardrobe, not any one character's. */
+export interface Milieu {
+  name: string;
+  description?: string | null;
+  wardrobe: string;
+  evidence: Evidence;
+}
+
+/** The style-free half: what the world *is*, never how a picture of it is made. */
+export interface WorldDossier {
+  time_periods: TimePeriod[];
+  locations: LocationProfile[];
+  milieus: Milieu[];
+}
+
+export interface PaletteColor {
+  name: string;
+  /** `#rrggbb` — validated on the backend, because the moodboard renders it. */
+  hex: string;
+  role?: string | null;
+}
+
+export interface StyleBible {
+  direction: StyleDirection;
+  name: string;
+  rationale: string;
+  mood_words: string[];
+  palette: PaletteColor[];
+  lighting: string;
+  influences: string[];
+  /** Appended verbatim to every future image call — the actual influence mechanism. */
+  style_prompt_block: string;
+  negative_constraints: string[];
+}
+
+/** `traditional` is null for a book with no illustration history to draw on. */
+export interface StyleBibleCandidates {
+  original: StyleBible;
+  traditional?: StyleBible | null;
+}
+
+/**
+ * One book's research, as persisted.
+ *
+ * Every artifact is nullable because a run that died partway keeps what it finished:
+ * `status: "partial"` plus an `error`, and the moodboard renders the sections that
+ * exist. `chosen_direction` is the reader's pick, and lives here rather than on the
+ * book record — re-running research legitimately resets it.
+ */
+export interface ResearchRecord {
+  book_id: string;
+  status: ResearchStatus;
+  error?: string | null;
+  chosen_direction: StyleDirection;
+  author_profile?: AuthorProfile | null;
+  world_dossier?: WorldDossier | null;
+  style_bibles?: StyleBibleCandidates | null;
+  /** Advisory notes (e.g. a dossier citing only the opening third) — not errors. */
+  coverage_notes: string[];
+  /** Null means unmeasured, which is not the same claim as free. */
+  cost_usd?: number | null;
+  created_at: string;
+  updated_at: string;
 }

@@ -83,6 +83,10 @@ class AgentDefinition:
     description: str
     default_models: dict[str, str]
     model_env_var: str
+    #: Whether this agent sends images to its model. Only used to warn on the settings
+    #: page — a hand-typed text-only model id is a trap that otherwise surfaces as a
+    #: mid-run provider error rather than a configuration mistake.
+    needs_vision: bool = False
 
     @property
     def fallback_model_id(self) -> str:
@@ -125,9 +129,77 @@ AGENTS: list[AgentDefinition] = [
         },
         model_env_var="DIORAMA_SCENE_MODEL_ID",
     ),
+    AgentDefinition(
+        id="literary_research",
+        name="Literary research",
+        description=(
+            "Researches the book behind the book — its author, the world it takes "
+            "place in, and what the illustrations should look like. Runs when you "
+            "open a book's moodboard."
+        ),
+        default_models={
+            OPENROUTER: "openrouter/google/gemini-3.6-flash",
+            GOOGLE: "gemini/gemini-3.6-flash",
+        },
+        model_env_var="DIORAMA_RESEARCH_MODEL_ID",
+        # Alone among the three, this agent looks at pictures: it fetches an
+        # illustrator's actual plates rather than reading captions about them. A
+        # text-only model doesn't degrade here, it errors on the fetched image — so
+        # the connection test warns when the configured model can't see.
+        needs_vision=True,
+    ),
 ]
 
 AGENTS_BY_ID: dict[str, AgentDefinition] = {a.id: a for a in AGENTS}
+
+
+# --------------------------------------------------------------------------- #
+# Web search providers
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class SearchProviderDefinition:
+    """A web-search provider :class:`~diorama.core.common_tools.WebSearchTool` can call.
+
+    Separate from :data:`~diorama.models.providers.PROVIDERS` because these are not
+    interchangeable with it in any way: an LLM provider is chosen *by the model id an
+    agent runs*, while a search provider is chosen by whichever key exists — search is
+    an undifferentiated commodity here, and the tool already picks the first usable
+    one. The ids and order mirror ``common_tools``' own detection order.
+    """
+
+    id: str
+    name: str
+    api_key_env: str
+    console_url: str
+    key_prefix_hint: str
+    blurb: str
+
+
+SEARCH_PROVIDERS: list[SearchProviderDefinition] = [
+    SearchProviderDefinition(
+        id="exa",
+        name="Exa",
+        api_key_env="EXA_API_KEY",
+        console_url="https://dashboard.exa.ai/api-keys",
+        key_prefix_hint="",
+        blurb=(
+            "Semantic search built for retrieval — the better fit for questions like "
+            "“who illustrated the first edition”."
+        ),
+    ),
+    SearchProviderDefinition(
+        id="tavily",
+        name="Tavily",
+        api_key_env="TAVILY_API_KEY",
+        console_url="https://app.tavily.com/home",
+        key_prefix_hint="tvly-",
+        blurb="An alternative search API, with a free tier.",
+    ),
+]
+
+SEARCH_PROVIDERS_BY_ID: dict[str, SearchProviderDefinition] = {
+    p.id: p for p in SEARCH_PROVIDERS
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -149,6 +221,10 @@ class DioramaSettings(BaseModel):
 
     #: provider id → API key. Absent means "fall back to that provider's env var".
     api_keys: dict[str, str] = Field(default_factory=dict)
+    #: search provider id → API key, same fallback rule. Absent from *every* source is
+    #: a supported state, not a broken one: research then works from the book's text
+    #: alone, since the web is enrichment here rather than a source of record.
+    search_api_keys: dict[str, str] = Field(default_factory=dict)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
 
     @model_validator(mode="before")
@@ -220,10 +296,31 @@ class ProviderView(BaseModel):
     api_key_source: ValueSource
 
 
+class SearchProviderView(BaseModel):
+    """One web-search provider's credential state, keys masked like the LLM ones.
+
+    ``active`` marks the provider a research run would actually call — the first one
+    with a usable key, matching ``WebSearchTool``'s own detection order. Two keys
+    configured is not an error; the second is simply a spare.
+    """
+
+    id: str
+    name: str
+    api_key_env: str
+    console_url: str
+    key_prefix_hint: str
+    blurb: str
+    api_key_configured: bool
+    api_key_masked: str | None
+    api_key_source: ValueSource
+    active: bool = False
+
+
 class SettingsView(BaseModel):
     """Everything the settings page renders."""
 
     providers: list[ProviderView]
+    search_providers: list[SearchProviderView]
     agents: list[AgentView]
 
 
@@ -239,6 +336,8 @@ class SettingsUpdate(BaseModel):
 
     #: provider id → API key. "" clears that provider's saved key.
     api_keys: dict[str, str] | None = None
+    #: search provider id → API key. "" clears it. Same sparse semantics.
+    search_api_keys: dict[str, str] | None = None
     #: agent id → litellm model id. "" resets that agent to inherit.
     agents: dict[str, str] | None = None
 
@@ -305,6 +404,15 @@ async def save_settings(update: SettingsUpdate) -> DioramaSettings:
             else:
                 settings.api_keys.pop(provider_id, None)
 
+        for provider_id, api_key in (update.search_api_keys or {}).items():
+            if provider_id not in SEARCH_PROVIDERS_BY_ID:
+                continue  # ignore unknown providers rather than persisting junk
+            key = (api_key or "").strip()
+            if key:
+                settings.search_api_keys[provider_id] = key
+            else:
+                settings.search_api_keys.pop(provider_id, None)
+
         for agent_id, model_id in (update.agents or {}).items():
             if agent_id not in AGENTS_BY_ID:
                 continue  # ignore unknown agents rather than persisting junk
@@ -350,6 +458,47 @@ def resolve_api_key(
     if from_env:
         return from_env, "env"
     return None, "none"
+
+
+def resolve_search_key(
+    settings: DioramaSettings, provider_id: str
+) -> tuple[str | None, ValueSource]:
+    """One search provider's key, and where it came from. Same chain as an LLM key."""
+    provider = SEARCH_PROVIDERS_BY_ID.get(provider_id)
+    if provider is None:
+        return None, "none"
+    saved = settings.search_api_keys.get(provider.id)
+    if saved:
+        return saved, "settings"
+    from_env = os.environ.get(provider.api_key_env)
+    if from_env:
+        return from_env, "env"
+    return None, "none"
+
+
+def resolve_search_provider(
+    settings: DioramaSettings,
+) -> tuple[str, str] | None:
+    """``(provider_id, api_key)`` for the search provider a run should use, or None.
+
+    First in registry order with a usable key, mirroring
+    :meth:`~diorama.core.common_tools.WebSearchTool.resolved_provider`'s own order so
+    the settings page's "active" marker names the provider that will really be called.
+
+    None — no key anywhere — is a **supported outcome**, not a failure: the caller
+    hands the agent a tool that reports itself unavailable, and the research runs from
+    the text alone.
+    """
+    for provider in SEARCH_PROVIDERS:
+        key, _ = resolve_search_key(settings, provider.id)
+        if key:
+            return provider.id, key
+    return None
+
+
+async def resolve_search_runtime() -> tuple[str, str] | None:
+    """:func:`resolve_search_provider` against freshly-read settings."""
+    return resolve_search_provider(await load_settings())
 
 
 def resolve_default_model_id(
@@ -425,10 +574,35 @@ def _provider_view(settings: DioramaSettings, provider_id: str) -> ProviderView:
     )
 
 
+def _search_provider_view(
+    settings: DioramaSettings, definition: SearchProviderDefinition, *, active: bool
+) -> SearchProviderView:
+    api_key, source = resolve_search_key(settings, definition.id)
+    return SearchProviderView(
+        id=definition.id,
+        name=definition.name,
+        api_key_env=definition.api_key_env,
+        console_url=definition.console_url,
+        key_prefix_hint=definition.key_prefix_hint,
+        blurb=definition.blurb,
+        api_key_configured=api_key is not None,
+        api_key_masked=mask_key(api_key) if api_key else None,
+        api_key_source=source,
+        active=active,
+    )
+
+
 def build_view(settings: DioramaSettings) -> SettingsView:
     """Project the stored settings into the browser-facing shape (keys masked)."""
+    resolved_search = resolve_search_provider(settings)
     return SettingsView(
         providers=[_provider_view(settings, p.id) for p in PROVIDERS],
+        search_providers=[
+            _search_provider_view(
+                settings, p, active=bool(resolved_search) and resolved_search[0] == p.id
+            )
+            for p in SEARCH_PROVIDERS
+        ],
         agents=[
             AgentView(
                 id=definition.id,
@@ -452,6 +626,8 @@ __all__ = [
     "AGENTS",
     "AGENTS_BY_ID",
     "PROVIDERS",
+    "SEARCH_PROVIDERS",
+    "SEARCH_PROVIDERS_BY_ID",
     "SETTINGS_FILE",
     "AgentConfig",
     "AgentDefinition",
@@ -460,6 +636,8 @@ __all__ = [
     "DioramaSettings",
     "Provider",
     "ProviderView",
+    "SearchProviderDefinition",
+    "SearchProviderView",
     "SettingsUpdate",
     "SettingsView",
     "build_view",
@@ -469,5 +647,8 @@ __all__ = [
     "resolve_api_key",
     "resolve_default_model_id",
     "resolve_model_id",
+    "resolve_search_key",
+    "resolve_search_provider",
+    "resolve_search_runtime",
     "save_settings",
 ]

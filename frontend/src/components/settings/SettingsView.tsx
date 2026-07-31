@@ -19,6 +19,7 @@ import type {
   ConnectionTest,
   Provider,
   ProviderView,
+  SearchProviderView,
   SettingsView as Settings,
   ValueSource,
 } from "@/lib/types";
@@ -62,6 +63,7 @@ export function SettingsView() {
 
   const [drafts, setDrafts] = useState<ModelDrafts>({});
   const [keyDrafts, setKeyDrafts] = useState<KeyDrafts>({});
+  const [searchKeyDrafts, setSearchKeyDrafts] = useState<KeyDrafts>({});
 
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState(0);
@@ -113,10 +115,11 @@ export function SettingsView() {
   const dirty = useMemo(() => {
     if (!settings) return false;
     if (Object.keys(keyDrafts).length > 0) return true;
+    if (Object.keys(searchKeyDrafts).length > 0) return true;
     return settings.agents.some(
       (agent) => (drafts[agent.id] ?? null) !== (agent.configured_model_id ?? null),
     );
-  }, [settings, drafts, keyDrafts]);
+  }, [settings, drafts, keyDrafts, searchKeyDrafts]);
 
   const handleSave = useCallback(async () => {
     if (!settings) return;
@@ -128,6 +131,9 @@ export function SettingsView() {
       );
       const next = await saveSettings({
         ...(Object.keys(keyDrafts).length ? { api_keys: keyDrafts } : {}),
+        ...(Object.keys(searchKeyDrafts).length
+          ? { search_api_keys: searchKeyDrafts }
+          : {}),
         ...(changed.length
           ? {
               agents: Object.fromEntries(
@@ -139,6 +145,7 @@ export function SettingsView() {
       setSettings(next);
       setDrafts(draftsFrom(next));
       setKeyDrafts({});
+      setSearchKeyDrafts({});
       setSavedAt(Date.now());
       setError(null);
       void loadCatalogue();
@@ -149,14 +156,25 @@ export function SettingsView() {
     } finally {
       setSaving(false);
     }
-  }, [settings, drafts, keyDrafts, loadCatalogue]);
+  }, [settings, drafts, keyDrafts, searchKeyDrafts, loadCatalogue]);
 
   const handleRevert = useCallback(() => {
     if (!settings) return;
     setDrafts(draftsFrom(settings));
     setKeyDrafts({});
+    setSearchKeyDrafts({});
     setTests({});
   }, [settings]);
+
+  const setSearchKeyDraft = useCallback((providerId: string, value: string | null) => {
+    setSearchKeyDrafts((current) => {
+      const next = { ...current };
+      // Same tri-state as an LLM key: absent is untouched, "" is an explicit clear.
+      if (value === null) delete next[providerId];
+      else next[providerId] = value;
+      return next;
+    });
+  }, []);
 
   const forgetTest = useCallback((providerId: string) => {
     setTests((current) => {
@@ -276,6 +294,22 @@ export function SettingsView() {
                     onTest={() => handleTest(provider.id)}
                     testing={testing === provider.id}
                     result={tests[provider.id] ?? null}
+                  />
+                ))}
+              </div>
+            </Section>
+
+            <Section
+              title="Web search"
+              blurb="Optional. Literary research uses the web to find out who illustrated a book, what a real place looks like, and when it was written. Without a key it still runs — just from the book's text alone."
+            >
+              <div className="space-y-8">
+                {settings.search_providers.map((provider) => (
+                  <SearchProviderCard
+                    key={provider.id}
+                    provider={provider}
+                    draft={searchKeyDrafts[provider.id]}
+                    onDraft={(value) => setSearchKeyDraft(provider.id, value)}
                   />
                 ))}
               </div>
@@ -523,6 +557,96 @@ function ProviderCard({
       <AnimatePresence>
         {result ? <TestResult key="test" result={result} /> : null}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/**
+ * One web-search provider's key.
+ *
+ * Deliberately thinner than `ProviderCard`: there is no connection test (search is
+ * either configured or not, and a failed search degrades to "work from the text"
+ * rather than breaking a run) and no "models stay out of the picker" caveat, because
+ * a search provider serves no models. `active` marks the one a run would call — the
+ * first with a key — so a second key reads as the spare it is.
+ */
+function SearchProviderCard({
+  provider,
+  draft,
+  onDraft,
+}: {
+  provider: SearchProviderView;
+  draft: string | undefined;
+  onDraft: (value: string | null) => void;
+}) {
+  const clearing = draft === "";
+  const inputId = `search-key-${provider.id}`;
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-4">
+        <label htmlFor={inputId} className="font-serif text-[1.15rem] text-ink">
+          {provider.name}
+          {provider.active ? (
+            <span className="label ml-2.5 align-middle text-accent">In use</span>
+          ) : null}
+        </label>
+        <a
+          href={provider.console_url}
+          target="_blank"
+          rel="noreferrer"
+          className="shrink-0 text-[0.78rem] text-ink-faint underline decoration-rule-strong underline-offset-2 transition-colors hover:text-ink-soft"
+        >
+          Get a key
+        </a>
+      </div>
+      <p className="mt-1.5 mb-3 max-w-xl text-[0.85rem] leading-relaxed text-ink-soft">
+        {provider.blurb}
+      </p>
+
+      <div className="relative">
+        <KeyIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-ink-faint" />
+        <input
+          id={inputId}
+          type="password"
+          value={draft ?? ""}
+          onChange={(event) => onDraft(event.target.value || null)}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={
+            clearing
+              ? "Will be cleared when you save"
+              : (provider.api_key_masked ?? (provider.key_prefix_hint || "Not set"))
+          }
+          className="w-full rounded-[3px] border border-rule bg-shell-raised py-2 pr-3 pl-9 font-mono text-[0.82rem] text-ink transition-colors placeholder:font-mono placeholder:text-ink-faint focus:border-rule-strong focus:outline-none"
+        />
+      </div>
+
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <SourceNote
+          source={provider.api_key_source}
+          envVar={provider.api_key_env}
+          configuredLabel="Saved here"
+          noneLabel="Not set"
+        />
+        {provider.api_key_source === "settings" && !clearing ? (
+          <button
+            type="button"
+            onClick={() => onDraft("")}
+            className="text-[0.78rem] text-ink-faint underline decoration-rule-strong underline-offset-2 transition-colors hover:text-danger"
+          >
+            Clear saved key
+          </button>
+        ) : null}
+        {clearing ? (
+          <button
+            type="button"
+            onClick={() => onDraft(null)}
+            className="text-[0.78rem] text-danger underline decoration-danger/40 underline-offset-2"
+          >
+            Keep it after all
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

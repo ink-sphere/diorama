@@ -6,11 +6,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getBook, getScenes, getStructure, saveProgress } from "@/lib/api";
 import { readBook, type ReadableBook } from "@/lib/structure";
-import type { BookRecord } from "@/lib/types";
+import type { BookRecord, BookScenes, EbookStructure } from "@/lib/types";
 import { useMediaQuery } from "@/lib/useMediaQuery";
 import { usePagination } from "@/lib/usePagination";
 import { useReaderPrefs } from "@/lib/useReaderPrefs";
+import { useResearch } from "@/lib/useResearch";
 
+import { Moodboard } from "./Moodboard";
 import { PageNav, ReaderHeader } from "./ReaderChrome";
 import { Spread } from "./Spread";
 import { TocSidebar } from "./TocSidebar";
@@ -28,12 +30,22 @@ import { TocSidebar } from "./TocSidebar";
  */
 export function ReaderView({ bookId }: { bookId: string }) {
   const [record, setRecord] = useState<BookRecord | null>(null);
-  const [book, setBook] = useState<ReadableBook | null>(null);
+  /** What the backend returned, before it is flattened for the page. */
+  const [source, setSource] = useState<{
+    structure: EbookStructure;
+    scenes: BookScenes | null;
+  } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [sectionIndex, setSectionIndex] = useState(0);
   const [page, setPage] = useState(0);
   const [typeMenuOpen, setTypeMenuOpen] = useState(false);
+  const [moodboardOpen, setMoodboardOpen] = useState(false);
+
+  // Owned here rather than inside the modal, so closing the modal detaches the
+  // viewer without touching the run, and the chrome can keep showing that research
+  // is still going. The book's "About the Author" back matter reads from it too.
+  const research = useResearch(bookId);
 
   // The plate needs real width to be worth showing; below that the text page takes
   // the whole sheet. Matches the `lg:` breakpoint the spread itself uses.
@@ -45,6 +57,17 @@ export function ReaderView({ bookId }: { bookId: string }) {
   const contentsOpen = contentsOverride ?? roomForContents;
 
   const { prefs, update, reset } = useReaderPrefs();
+
+  // Derived rather than stored, so an author profile arriving mid-read appends the
+  // "About the Author" section on the next render — no effect writing state, which
+  // the React Compiler lint forbids anyway.
+  const book: ReadableBook | null = useMemo(
+    () =>
+      source
+        ? readBook(source.structure, source.scenes, research.record?.author_profile)
+        : null,
+    [source, research.record?.author_profile],
+  );
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -107,7 +130,7 @@ export function ReaderView({ bookId }: { bookId: string }) {
         if (cancelled) return;
         const readable = readBook(structure, scenes);
         setRecord(bookRecord);
-        setBook(readable);
+        setSource({ structure, scenes });
 
         const progress = bookRecord.progress;
         if (progress && readable.sections.length > 0) {
@@ -189,6 +212,9 @@ export function ReaderView({ bookId }: { bookId: string }) {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.matches("input, textarea, [contenteditable]")) return;
+      // The moodboard sits over the spread and scrolls itself; turning pages behind
+      // it would move the book the reader can't currently see.
+      if (moodboardOpen) return;
 
       if (event.key === "ArrowRight" || event.key === "PageDown") {
         event.preventDefault();
@@ -206,7 +232,7 @@ export function ReaderView({ bookId }: { bookId: string }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [next, previous]);
+  }, [moodboardOpen, next, previous]);
 
   // Cumulative word counts turn (section, page) into a percentage that reflects how
   // much book is actually behind you — sections vary wildly in length, so counting
@@ -271,6 +297,9 @@ export function ReaderView({ bookId }: { bookId: string }) {
         sectionHeading={section?.heading ?? null}
         contentsOpen={contentsOpen}
         onToggleContents={() => setContentsOverride(!contentsOpen)}
+        moodboardOpen={moodboardOpen}
+        onToggleMoodboard={() => setMoodboardOpen((open) => !open)}
+        researching={research.streaming}
         typeMenuOpen={typeMenuOpen}
         onTypeMenuOpenChange={setTypeMenuOpen}
         prefs={prefs}
@@ -310,7 +339,9 @@ export function ReaderView({ bookId }: { bookId: string }) {
                   viewportRef={viewportRef}
                   contentRef={contentRef}
                   prefs={prefs}
-                  showPlate={wideEnoughForPlate}
+                  // Back matter gets no plate: the frame is for the story, and an
+                  // "About the Author" page in a real book faces a blank leaf.
+                  showPlate={wideEnoughForPlate && section.kind !== "back-matter"}
                 />
               ) : (
                 <SpreadSkeleton />
@@ -329,6 +360,13 @@ export function ReaderView({ bookId }: { bookId: string }) {
           />
         </div>
       </div>
+
+      <Moodboard
+        open={moodboardOpen}
+        onClose={() => setMoodboardOpen(false)}
+        bookTitle={book?.title ?? record?.title ?? "this book"}
+        research={research}
+      />
     </div>
   );
 }

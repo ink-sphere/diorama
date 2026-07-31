@@ -5,6 +5,13 @@ registered tool schemas (``tool_choice="auto"``), executes any tool calls, feeds
 results back, and repeats. **A turn ends when the model replies with no tool calls**
 — ``final_answer`` is an optional convenience tool, not a requirement.
 
+That rule cannot, on its own, distinguish a model that has finished from one that has
+merely gone quiet, so two guards stand in front of it: an empty reply is retried
+rather than obeyed (see :func:`_is_empty_reply`), and an optional ``completion_guard``
+can push a settling run onward when the work it exists to do is not done. Both are
+bounded, and a run stopped by either ends with a stop reason that says so rather than
+reporting success.
+
 The loop itself emits nothing to a terminal. It yields typed
 :mod:`~diorama.core.events` that any number of subscribers consume, which is what
 lets the same agent drive a Rich console, an SSE stream, and a session recorder at
@@ -109,6 +116,9 @@ BeforeToolCall = Callable[
 AfterToolCall = Callable[
     [ToolInvocation, ToolResult], "Awaitable[ToolResult] | ToolResult"
 ]
+# A completion check: return None when the run may settle, or a sentence explaining
+# what is still missing, which is injected as a user message so the run continues.
+CompletionGuard = Callable[[], "Awaitable[str | None] | str | None"]
 
 
 class ReactAgentResult(BaseModel):
@@ -118,9 +128,16 @@ class ReactAgentResult(BaseModel):
         final_answer (str | None): The last assistant reply that carried no tool
             calls. None when the run was cancelled, hit the turn limit, or the model
             returned empty content.
-        completed (bool): Whether the run ended because the model was done.
-        stop_reason (str): ``completed``, ``max_iterations``, ``cancelled``, or
-            ``length`` (the provider truncated the reply).
+        completed (bool): Whether the run ended because the model was done. True only
+            for ``completed`` and ``tool_terminated`` — every other stop reason is a
+            run that ended with work outstanding.
+        stop_reason (str): ``completed``, ``tool_terminated``, ``max_iterations``,
+            ``cancelled``, ``length`` (the provider truncated the reply),
+            ``content_filter``, ``empty_response`` (the provider kept returning a
+            reply with neither content nor tool calls), or ``incomplete`` (the
+            completion guard still had outstanding work when the nudge budget ran
+            out). The last two exist so that a run which stopped short can no longer
+            be mistaken for one that finished.
         steps (int): How many model turns were executed.
         messages (list): Full history after the run.
         usage (dict): The model's cumulative token counters.
@@ -164,6 +181,12 @@ class _RunState:
     stop_reason: str = "completed"
     final_answer: str | None = None
     completed: bool = False
+    #: Empty replies retried since the last turn that actually did something.
+    empty_replies: int = 0
+    #: Nudges the completion guard has spent this run.
+    nudges_spent: int = 0
+    #: The guard wanted to push the run onward but had no nudges left.
+    guard_unsatisfied: bool = False
 
 
 def _status_code(error: Exception) -> int | None:
@@ -296,6 +319,48 @@ def _last_tool_text(tool_results: list[dict[str, Any]]) -> str | None:
     return tool_results[-1].get("content") if tool_results else None
 
 
+#: How each stop reason reads to someone who is not holding this file open. Used by
+#: the agents when a run ends without the artifact they exist to produce — where the
+#: stop reason is the whole explanation, and ``stop_reason=incomplete`` explains
+#: nothing to the person whose book didn't get a moodboard.
+_STOP_REASON_PHRASES: dict[str, str] = {
+    "completed": "the model ended the run without submitting anything",
+    "empty_response": (
+        "the model went quiet — it returned an empty reply several times running"
+    ),
+    "incomplete": (
+        "the model stopped early and didn't pick the work back up when asked to"
+    ),
+    "max_iterations": "the run hit its turn limit",
+    "length": "the model's reply was cut off by its output limit",
+    "content_filter": "the provider's content filter stopped the reply",
+    "cancelled": "the run was cancelled",
+}
+
+
+def describe_stop_reason(stop_reason: str) -> str:
+    """Render a stop reason as a phrase, falling back to the raw value."""
+    return _STOP_REASON_PHRASES.get(stop_reason, f"stop_reason={stop_reason}")
+
+
+def _is_empty_reply(message: dict[str, Any]) -> bool:
+    """True when the provider returned neither content nor tool calls.
+
+    **An empty reply is not a decision.** The loop's normal termination rule — a turn
+    ends when the model returns no tool calls — cannot by itself tell "the model is
+    finished" apart from "the provider returned nothing", and the second happens: an
+    empty candidate comes back with ``finish_reason: "stop"``, no usage, and no
+    diagnostics. Treating that as a finished turn silently ends a run mid-task, which
+    is worst for an agent whose output is an artifact rather than a closing message.
+
+    Deliberately counts a reasoning-only reply as empty too: thinking with nothing
+    acted on leaves the run exactly where it was.
+    """
+    if message.get("tool_calls"):
+        return False
+    return not str(message.get("content") or "").strip()
+
+
 # --------------------------------------------------------------------------- #
 # Message helpers + normalised LLM result
 # --------------------------------------------------------------------------- #
@@ -422,6 +487,9 @@ class ReactAgent:
         before_tool_call: BeforeToolCall | None = None,
         after_tool_call: AfterToolCall | None = None,
         preserve_reasoning: bool = True,
+        completion_guard: CompletionGuard | None = None,
+        max_completion_nudges: int = 2,
+        max_empty_replies: int = 2,
     ) -> None:
         """Initialise the agent with its tool set and configuration.
 
@@ -463,6 +531,24 @@ class ReactAgent:
                 replay the signed blocks to the provider. Defaults to True; set False
                 to strip them (smaller context, but Anthropic extended thinking then
                 cannot be continued across turns).
+            completion_guard (CompletionGuard | None): Consulted when a turn ends with
+                no tool calls — the loop's implicit exit. Return None to let the run
+                settle, or a sentence naming what is still missing, which is injected
+                as a user message so the run continues instead of ending. This is what
+                closes the gap for an agent whose deliverable is a **submitted
+                artifact** rather than a closing message: for those, "the model stopped
+                talking" is not evidence of success, and the right answer is to say so
+                and carry on rather than to fail the run. May be sync or async.
+            max_completion_nudges (int): How many times ``completion_guard`` may push a
+                settling run onward before it is allowed to stop as ``incomplete``.
+                Bounded explicitly rather than left to ``max_iterations``, because each
+                nudge replays the whole transcript and a model that has decided it is
+                finished rarely changes its mind on the fifth telling.
+            max_empty_replies (int): How many times a reply carrying neither content
+                nor tool calls is retried before the run stops as ``empty_response``.
+                The retry is nearly free — an empty candidate is billed nothing and
+                nothing was executed — so this defends the common transient case
+                without the loop being able to spin on it.
         """
         self.model = model or LiteLLMModel(
             model_id=model_id,
@@ -482,6 +568,9 @@ class ReactAgent:
         self.before_tool_call = before_tool_call
         self.after_tool_call = after_tool_call
         self.preserve_reasoning = preserve_reasoning
+        self.completion_guard = completion_guard
+        self.max_completion_nudges = max_completion_nudges
+        self.max_empty_replies = max_empty_replies
         self.queue_mode: QueueMode = queue_mode
         self.session = session
         self.auto_compact = auto_compact
@@ -815,10 +904,60 @@ class ReactAgent:
                     active = False
                     break
 
+                if calls:
+                    # The provider is answering properly again; a couple of empty
+                    # replies early in a long run shouldn't spend the budget that
+                    # protects a blip much later on.
+                    state.empty_replies = 0
+
                 if not calls:
+                    # The implicit exit. Before honouring it, rule out the two ways a
+                    # quiet turn lies about being a finished one. Held locally so a
+                    # blip on this turn can't mislabel a run that goes on to finish
+                    # properly several turns later.
+                    settle_reason = "completed"
+                    if _is_empty_reply(assistant):
+                        if state.empty_replies < self.max_empty_replies:
+                            state.empty_replies += 1
+                            # The empty turn stays in history for diagnostics and is
+                            # already filtered out of the wire format by
+                            # _provider_messages(), so the retry sees the transcript
+                            # exactly as the failed attempt did.
+                            logger.warning(
+                                "Empty reply from the provider (turn %d) — retrying "
+                                "(%d/%d)",
+                                state.turn,
+                                state.empty_replies,
+                                self.max_empty_replies,
+                            )
+                            yield RetryEvent(
+                                attempt=state.empty_replies + 1,
+                                max_attempts=self.max_empty_replies + 1,
+                                delay_seconds=0.0,
+                                reason="the model returned an empty reply",
+                            )
+                            yield TurnEndEvent(turn=state.turn, message=assistant)
+                            has_more_tools = True  # keep the loop alive
+                            continue
+                        settle_reason = "empty_response"
+
+                    nudge = await self._completion_nudge(state)
+                    if nudge is not None:
+                        yield TurnEndEvent(turn=state.turn, message=assistant)
+                        pending = (_user_message(nudge),)
+                        continue
+                    if state.guard_unsatisfied:
+                        # The guard still has something outstanding but has no nudges
+                        # left: the run is stopping with work undone, which is not the
+                        # same thing as having finished it.
+                        settle_reason = "incomplete"
+
                     state.final_answer = assistant.get("content")
-                    state.completed = True
-                    state.stop_reason = "completed"
+                    # Only a run that settled with nothing outstanding may call itself
+                    # completed. The other two endings are failures that were
+                    # previously indistinguishable from success.
+                    state.completed = settle_reason == "completed"
+                    state.stop_reason = settle_reason
 
                 tool_results: list[dict[str, Any]] = []
                 terminated = False
@@ -895,6 +1034,32 @@ class ReactAgent:
         """Append a message and return its start/end events."""
         self._append(message)
         return [MessageStartEvent(message=message), MessageEndEvent(message=message)]
+
+    async def _completion_nudge(self, state: _RunState) -> str | None:
+        """Ask the completion guard whether the run may settle.
+
+        Returns:
+            str | None: A message to inject and continue with, or None to let the run
+                settle. When the guard reports outstanding work but the nudge budget is
+                spent, this returns None *and* sets ``state.guard_unsatisfied``, so the
+                caller stops with ``incomplete`` rather than claiming success.
+        """
+        if self.completion_guard is None:
+            return None
+        outcome = self.completion_guard()
+        reason = await outcome if isawaitable(outcome) else outcome
+        if not reason:
+            return None
+        if state.nudges_spent >= self.max_completion_nudges:
+            logger.warning(
+                "Completion guard still unsatisfied after %d nudges: %s",
+                state.nudges_spent,
+                reason,
+            )
+            state.guard_unsatisfied = True
+            return None
+        state.nudges_spent += 1
+        return str(reason)
 
     def _provider_messages(self) -> list[dict[str, Any]]:
         """Return history filtered and cleaned to what a provider will accept.

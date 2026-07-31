@@ -127,7 +127,11 @@ async def test_orphaned_tool_calls_are_repaired_before_the_next_run():
 
 
 async def test_empty_assistant_turn_is_not_replayed_to_the_provider():
-    model = FakeModel([response(content=None), response(content="second")])
+    # The empty reply is retried (see the empty-response tests below), so the first
+    # run consumes two responses before it settles.
+    model = FakeModel(
+        [response(content=None), response(content="first"), response(content="second")]
+    )
     agent = _agent(model)
 
     await agent.run("one")
@@ -619,3 +623,152 @@ def test_branch_requires_a_session():
     agent = _agent(FakeModel([]))
     with pytest.raises(RuntimeError, match="session store"):
         agent.branch("whatever")
+
+
+# --------------------------------------------------------------------------- #
+# Closing the implicit exit
+#
+# The loop's normal rule — a turn ends when the model returns no tool calls — cannot
+# by itself tell "the model is finished" apart from "the provider returned nothing"
+# or "the model stopped with its actual job undone". Both were previously reported as
+# a successful, completed run. These cover the two guards that close that gap.
+# --------------------------------------------------------------------------- #
+async def test_an_empty_reply_is_retried_rather_than_read_as_finished():
+    """The observed failure: an empty candidate ended a run mid-task.
+
+    ``finish_reason: "stop"``, no content, no tool calls, no usage — indistinguishable
+    from a deliberate finish under the old rule.
+    """
+    model = FakeModel([response(content=None), response(content="Actually, here.")])
+    agent = _agent(model)
+
+    result = await agent.run("go")
+
+    assert len(model.calls) == 2  # it asked again instead of giving up
+    assert result.stop_reason == "completed"
+    assert result.final_answer == "Actually, here."
+
+
+async def test_a_persistently_empty_provider_stops_as_empty_response():
+    """Bounded: a retry that never helps must not spin, and must not claim success."""
+    model = FakeModel([response(content=None) for _ in range(3)])
+    agent = _agent(model)
+
+    result = await agent.run("go")
+
+    assert len(model.calls) == 3  # the first reply plus max_empty_replies retries
+    assert result.stop_reason == "empty_response"
+    assert result.completed is False
+
+
+async def test_the_empty_reply_budget_resets_after_a_productive_turn():
+    """Two blips early shouldn't spend the budget protecting a blip much later."""
+    model = FakeModel(
+        [
+            response(content=None),
+            response(content=None),
+            response(
+                tool_calls=[tool_call("c1", "calculator", '{"expression": "1+1"}')]
+            ),
+            response(content=None),
+            response(content="done"),
+        ]
+    )
+    agent = _agent(model, [CalculatorTool()])
+
+    result = await agent.run("go")
+
+    assert len(model.calls) == 5
+    assert result.stop_reason == "completed"
+    assert result.final_answer == "done"
+
+
+async def test_a_completion_guard_pushes_a_quiet_run_onward():
+    """The guard turns a premature stop into one more turn, not a failed run."""
+    submitted: list[str] = []
+    model = FakeModel(
+        [
+            response(content="I think that's everything."),
+            response(
+                tool_calls=[tool_call("c1", "calculator", '{"expression": "2+2"}')]
+            ),
+            response(content="Now it's everything."),
+        ]
+    )
+    agent = _agent(
+        model,
+        [CalculatorTool()],
+        completion_guard=lambda: None if submitted else "You haven't done the sum yet.",
+    )
+    agent.subscribe(
+        lambda event: (
+            submitted.append("done")
+            if getattr(event, "tool_name", None) == "calculator"
+            else None
+        )
+    )
+
+    result = await agent.run("go")
+
+    assert len(model.calls) == 3
+    assert result.stop_reason == "completed"
+    assert result.completed is True
+    # The nudge is a real user message, so the model can see what it was told.
+    assert any(
+        m["role"] == "user" and "haven't done the sum" in str(m.get("content"))
+        for m in agent.messages
+    )
+
+
+async def test_an_unsatisfied_guard_stops_as_incomplete_not_completed():
+    """The point of the whole change: stopping short is no longer indistinguishable
+    from finishing."""
+    model = FakeModel([response(content="Nothing more from me.") for _ in range(3)])
+    agent = _agent(model, completion_guard=lambda: "You still owe an artifact.")
+
+    result = await agent.run("go")
+
+    assert len(model.calls) == 3  # the quiet turn plus max_completion_nudges
+    assert result.stop_reason == "incomplete"
+    assert result.completed is False
+
+
+async def test_the_nudge_budget_is_configurable():
+    model = FakeModel([response(content="no") for _ in range(5)])
+    agent = _agent(
+        model, completion_guard=lambda: "keep going", max_completion_nudges=4
+    )
+
+    result = await agent.run("go")
+
+    assert len(model.calls) == 5
+    assert result.stop_reason == "incomplete"
+
+
+async def test_an_async_completion_guard_is_awaited():
+    calls: list[int] = []
+
+    async def guard() -> str | None:
+        calls.append(1)
+        return None if len(calls) > 1 else "once more"
+
+    model = FakeModel([response(content="a"), response(content="b")])
+    agent = _agent(model, completion_guard=guard)
+
+    result = await agent.run("go")
+
+    assert len(calls) == 2
+    assert result.stop_reason == "completed"
+
+
+async def test_no_guard_leaves_the_ordinary_ending_untouched():
+    """A chat agent's deliverable *is* the closing message; nothing changes for it."""
+    model = FakeModel([response(content="here you go")])
+    agent = _agent(model)
+
+    result = await agent.run("go")
+
+    assert len(model.calls) == 1
+    assert result.stop_reason == "completed"
+    assert result.completed is True
+    assert result.final_answer == "here you go"

@@ -23,6 +23,7 @@ DATA_DIR = REPO_ROOT / ".diorama_data"
 UPLOADS_DIR = DATA_DIR / "uploads"
 STRUCTURES_DIR = DATA_DIR / "structures"
 SCENES_DIR = DATA_DIR / "scenes"
+RESEARCH_DIR = DATA_DIR / "research"
 COVERS_DIR = DATA_DIR / "covers"
 LIBRARY_FILE = DATA_DIR / "library.json"
 
@@ -33,6 +34,7 @@ def _ensure_dirs() -> None:
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     STRUCTURES_DIR.mkdir(parents=True, exist_ok=True)
     SCENES_DIR.mkdir(parents=True, exist_ok=True)
+    RESEARCH_DIR.mkdir(parents=True, exist_ok=True)
     COVERS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -93,6 +95,19 @@ def scenes_path(book_id: str) -> Path:
     return SCENES_DIR / f"{book_id}.json"
 
 
+def research_path(book_id: str) -> Path:
+    """Where a book's literary-research record is persisted.
+
+    Its own directory for the same reason ``scenes/`` has one: research is optional
+    and lazy — it only runs when someone opens the book's moodboard — so **the file's
+    absence is the normal state**, and it says "nobody has researched this book"
+    rather than "something is missing". See
+    :class:`diorama.backend.research.ResearchRecord` for the envelope stored here.
+    """
+    _ensure_dirs()
+    return RESEARCH_DIR / f"{book_id}.json"
+
+
 def cached_cover(book_id: str) -> Path | None:
     """The cached cover file for ``book_id``, if one has been extracted before.
 
@@ -122,7 +137,12 @@ async def delete_book(book_id: str) -> bool:
             return False
         _write_all(remaining)
 
-    for path in (upload_path(book_id), structure_path(book_id), scenes_path(book_id)):
+    for path in (
+        upload_path(book_id),
+        structure_path(book_id),
+        scenes_path(book_id),
+        research_path(book_id),
+    ):
         path.unlink(missing_ok=True)
     for path in COVERS_DIR.glob(f"{book_id}.*"):
         path.unlink(missing_ok=True)
@@ -138,6 +158,7 @@ async def delete_book(book_id: str) -> bool:
 __all__ = [
     "COVERS_DIR",
     "DATA_DIR",
+    "RESEARCH_DIR",
     "SCENES_DIR",
     "STRUCTURES_DIR",
     "UPLOADS_DIR",
@@ -146,6 +167,7 @@ __all__ = [
     "delete_book",
     "get_book",
     "list_books",
+    "research_path",
     "scenes_path",
     "structure_path",
     "upload_path",

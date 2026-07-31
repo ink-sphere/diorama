@@ -7,6 +7,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   ContentsIcon,
+  PaletteIcon,
 } from "@/components/Icons";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import type { ReaderPrefs } from "@/lib/useReaderPrefs";
@@ -18,6 +19,9 @@ export function ReaderHeader({
   sectionHeading,
   contentsOpen,
   onToggleContents,
+  moodboardOpen,
+  onToggleMoodboard,
+  researching,
   typeMenuOpen,
   onTypeMenuOpenChange,
   prefs,
@@ -28,6 +32,10 @@ export function ReaderHeader({
   sectionHeading: string | null;
   contentsOpen: boolean;
   onToggleContents: () => void;
+  moodboardOpen: boolean;
+  onToggleMoodboard: () => void;
+  /** A research run is in flight — shown even with the modal closed. */
+  researching: boolean;
   typeMenuOpen: boolean;
   onTypeMenuOpenChange: (open: boolean) => void;
   prefs: ReaderPrefs;
@@ -68,6 +76,26 @@ export function ReaderHeader({
           }`}
         >
           <ContentsIcon className="size-[18px]" />
+        </button>
+        <button
+          type="button"
+          onClick={onToggleMoodboard}
+          aria-label="Moodboard"
+          aria-pressed={moodboardOpen}
+          className={`relative grid size-9 place-items-center rounded-full transition-colors hover:bg-shell-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+            moodboardOpen ? "bg-shell-raised text-ink" : "text-ink-soft"
+          }`}
+        >
+          <PaletteIcon className="size-[18px]" />
+          {/* Closing the modal doesn't stop the run, so the chrome has to say it's
+              still going — otherwise dismissing it looks like cancelling it. */}
+          {researching ? (
+            <motion.span
+              className="absolute top-1.5 right-1.5 block size-[5px] rounded-full bg-accent"
+              animate={{ opacity: [1, 0.3, 1], scale: [1, 0.8, 1] }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
+            />
+          ) : null}
         </button>
         <TypeMenu
           open={typeMenuOpen}

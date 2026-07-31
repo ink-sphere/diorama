@@ -27,7 +27,7 @@ import weave
 
 from diorama.core.context import ContextCompactor
 from diorama.core.events import AgentEvent
-from diorama.core.react import ReactAgent
+from diorama.core.react import ReactAgent, describe_stop_reason
 from diorama.core.results import ToolResult
 from diorama.core.tool import Tool, ToolParameter
 from diorama.ebook.models import EbookStructure
@@ -524,6 +524,20 @@ class EbookLoaderAgent:
             max_iterations=self._max_iterations,
             compactor=compactor,
             weave_project=self._weave_project,
+            # This agent's deliverable is a submitted structure, not a closing
+            # message, so a turn that ends with no tool call is not evidence of
+            # success — it is a run about to end with nothing to show. Say what is
+            # missing and let it carry on.
+            completion_guard=lambda: (
+                None
+                if state.result is not None
+                else (
+                    "You haven't submitted a structure yet, so nothing has been "
+                    "saved. Call submit_structure now with the tree you've worked "
+                    "out. If a previous submission was rejected, fix the errors it "
+                    "reported and submit again."
+                )
+            ),
         )
         return agent, state, context
 
@@ -536,7 +550,7 @@ class EbookLoaderAgent:
             reason = (
                 "; ".join(state.last_errors)
                 if state.last_errors
-                else f"stop_reason={stop_reason}"
+                else describe_stop_reason(stop_reason)
             )
             raise EbookLoaderError(
                 f"EbookLoaderAgent did not submit a valid structure for "

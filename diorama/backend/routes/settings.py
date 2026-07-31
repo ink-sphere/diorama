@@ -21,6 +21,7 @@ from starlette.concurrency import run_in_threadpool
 
 from diorama.backend.settings import (
     AGENTS,
+    SEARCH_PROVIDERS_BY_ID,
     ConnectionTest,
     DioramaSettings,
     Provider,
@@ -61,6 +62,7 @@ class CatalogueEntry(BaseModel):
     completion_price: float = 0.0
     pricing_known: bool = True
     supports_tools: bool = False
+    supports_vision: bool = True
 
 
 class CatalogueStatus(BaseModel):
@@ -113,6 +115,11 @@ async def put_settings(update: SettingsUpdate) -> SettingsView:
     if unknown_providers:
         raise HTTPException(
             400, f"Unknown provider(s): {', '.join(sorted(unknown_providers))}."
+        )
+    unknown_search = set(update.search_api_keys or {}) - set(SEARCH_PROVIDERS_BY_ID)
+    if unknown_search:
+        raise HTTPException(
+            400, f"Unknown search provider(s): {', '.join(sorted(unknown_search))}."
         )
     return build_view(await save_settings(update))
 
@@ -321,6 +328,13 @@ def _model_warnings(
             warnings.append(
                 f"{definition.name}: “{model.name}” doesn't support tool calling, "
                 "which this agent needs."
+            )
+        elif definition.needs_vision and not model.supports_vision:
+            # Only reachable when the catalogue positively declared a text-only
+            # model — see ModelInfo.supports_vision, which defaults to permissive.
+            warnings.append(
+                f"{definition.name}: “{model.name}” can't accept images, so this "
+                "agent won't be able to look at a book's illustrations."
             )
     return warnings
 

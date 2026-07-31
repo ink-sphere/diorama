@@ -15,8 +15,10 @@ import type {
   ModelCatalogue,
   Provider,
   ReadingProgress,
+  ResearchRecord,
   SettingsUpdate,
   SettingsView,
+  StyleDirection,
   UploadResponse,
   UsageSummary,
 } from "./types";
@@ -87,6 +89,41 @@ export async function getScenes(bookId: string): Promise<BookScenes | null> {
     }
     throw error;
   }
+}
+
+/**
+ * A book's research artifacts, or null when nobody has researched it yet.
+ *
+ * Research is lazy — it only runs when someone opens the moodboard — so 404 is the
+ * normal answer for most books and resolves to null rather than throwing. A *partial*
+ * record still resolves normally: the moodboard renders what exists and offers retry.
+ */
+export async function getResearch(bookId: string): Promise<ResearchRecord | null> {
+  try {
+    return await request<ResearchRecord>(`/api/books/${bookId}/research`, {
+      cache: "no-store",
+    });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** Forget the last research run so reopening the stream starts a fresh full one. */
+export function retryResearch(bookId: string): Promise<void> {
+  return request<void>(`/api/books/${bookId}/research/retry`, { method: "POST" });
+}
+
+/** Pick the active style bible. A metadata edit — nothing is regenerated. */
+export function chooseStyleDirection(
+  bookId: string,
+  direction: StyleDirection,
+): Promise<ResearchRecord> {
+  return request<ResearchRecord>(`/api/books/${bookId}/research/style`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ direction }),
+  });
 }
 
 export function uploadBook(file: File): Promise<UploadResponse> {
@@ -167,6 +204,14 @@ export function coverUrl(bookId: string): string {
 
 export function streamUrl(bookId: string): string {
   return `${API_BASE}/api/books/${bookId}/stream`;
+}
+
+/**
+ * The research run's live trace. **Opening this starts the run** if one isn't already
+ * going and no complete record exists — opening the moodboard is the request.
+ */
+export function researchStreamUrl(bookId: string): string {
+  return `${API_BASE}/api/books/${bookId}/research/stream`;
 }
 
 export { ApiError };

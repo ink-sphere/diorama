@@ -32,7 +32,7 @@ import weave
 
 from diorama.core.context import ContextCompactor
 from diorama.core.events import AgentEvent
-from diorama.core.react import ReactAgent
+from diorama.core.react import ReactAgent, describe_stop_reason
 from diorama.core.results import ToolResult
 from diorama.core.tool import Tool, ToolParameter
 from diorama.ebook.models import EbookStructure, StructureNode
@@ -439,6 +439,18 @@ class EbookSceneSegmentationAgent:
             max_iterations=self._max_iterations,
             compactor=compactor,
             weave_project=self._weave_project,
+            # As with the loader: the deliverable is a submitted partition, so a
+            # quiet turn means the run is about to end having marked nothing.
+            completion_guard=lambda: (
+                None
+                if state.result is not None
+                else (
+                    "You haven't submitted any scene boundaries yet. Call "
+                    "submit_scenes now with a partition covering every paragraph. "
+                    "If a previous submission was rejected, fix the errors it "
+                    "reported and submit again."
+                )
+            ),
         )
         return agent, state
 
@@ -451,7 +463,7 @@ class EbookSceneSegmentationAgent:
             reason = (
                 "; ".join(state.last_errors)
                 if state.last_errors
-                else f"stop_reason={stop_reason}"
+                else describe_stop_reason(stop_reason)
             )
             raise SceneSegmentationError(
                 f"EbookSceneSegmentationAgent did not submit valid scenes for "

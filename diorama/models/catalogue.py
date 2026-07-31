@@ -79,6 +79,12 @@ class ModelInfo:
         supports_tools (bool): Whether the model can call tools. Reported by
             OpenRouter; inferred from the family for Google. The ebook loader is
             useless without it, so the picker filters on this by default.
+        supports_vision (bool): Whether the model accepts images. Read from
+            OpenRouter's declared input modalities; **assumed True for Google**,
+            whose model list reports no modalities at all. Defaults to True for the
+            same reason: this flag is only ever used to *warn* (the literary research
+            agent looks at illustrations), and warning on an absence of evidence would
+            cry wolf on every model a catalogue happens not to describe.
     """
 
     id: str
@@ -91,6 +97,7 @@ class ModelInfo:
     completion_price: float
     pricing_known: bool
     supports_tools: bool
+    supports_vision: bool = True
 
 
 def _f(value: object) -> float:
@@ -141,6 +148,10 @@ def _parse_openrouter(entry: dict) -> ModelInfo | None:
     pricing = entry.get("pricing") if isinstance(entry.get("pricing"), dict) else {}
     context = entry.get("context_length")
     params = entry.get("supported_parameters")
+    architecture = (
+        entry.get("architecture") if isinstance(entry.get("architecture"), dict) else {}
+    )
+    modalities = architecture.get("input_modalities")
     return ModelInfo(
         id=to_litellm_id(model_ref, OPENROUTER),
         provider=OPENROUTER,
@@ -154,6 +165,13 @@ def _parse_openrouter(entry: dict) -> ModelInfo | None:
         # OpenRouter reports capability as the parameters a model accepts; "tools"
         # in that list is the closest thing to a function-calling flag it exposes.
         supports_tools=isinstance(params, list) and "tools" in params,
+        # Only a *declared* text-only model is reported as sightless. An entry that
+        # lists no modalities says nothing, and is left at the permissive default.
+        supports_vision=(
+            "image" in modalities
+            if isinstance(modalities, list) and modalities
+            else True
+        ),
     )
 
 

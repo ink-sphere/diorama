@@ -211,3 +211,15 @@ export function ImageIcon(props: IconProps) {
     </Icon>
   );
 }
+
+/** The moodboard: a painter's palette. */
+export function PaletteIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3.5a8.5 8.5 0 0 0 0 17c1.2 0 1.9-.8 1.9-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.8-1.6 1.7-1.6h1.6a4.3 4.3 0 0 0 4.3-4.3c0-3.9-3.8-7-8.5-7Z" />
+      <circle cx="8" cy="10" r="1" />
+      <circle cx="12" cy="7.5" r="1" />
+      <circle cx="16" cy="10" r="1" />
+    </Icon>
+  );
+}
