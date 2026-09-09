@@ -9,7 +9,7 @@ from rich.status import Status
 from rich.text import Text
 from tau_agent.messages import AssistantMessage
 
-from diorama.utils.trace_events import LoaderEvent, TraceEvent
+from diorama.utils.trace_events import DioramaAgentEvent, TraceEvent
 
 
 def _safe(value: str) -> str:
@@ -85,18 +85,22 @@ class TraceDisplayCallback:
 
     def __call__(self, event: TraceEvent) -> None:
         kind = event.type
-        if isinstance(event, LoaderEvent):
+        if isinstance(event, DioramaAgentEvent):
             style = (
                 "red"
-                if kind == "load_error"
+                if event.phase == "error" or kind == "load_error"
                 else "yellow"
-                if kind == "load_cancelled"
+                if event.phase == "cancelled" or kind == "load_cancelled"
                 else "cyan"
             )
             self._line(kind, event.message, style)
             if event.details:
                 self._preview(event.details)
-            if kind in {"load_complete", "load_error", "load_cancelled"}:
+            if event.phase in {"complete", "error", "cancelled"} or kind in {
+                "load_complete",
+                "load_error",
+                "load_cancelled",
+            }:
                 self.close()
         elif kind == "turn_start":
             self._turn += 1

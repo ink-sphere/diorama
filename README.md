@@ -101,7 +101,8 @@ activity previews. It does not expose hidden reasoning, credentials, or provider
 signatures. Missing provider usage is not estimated.
 
 The callback accepts Tau `AgentEvent` objects and presentation-independent
-`LoaderEvent` objects from `diorama.utils.trace_events`. Loader event types are
+`DioramaAgentEvent` objects from `diorama.utils.trace_events`. `LoaderEvent` remains
+a compatibility alias. Loader event types are
 `load_start`, `source_ready`, `publish_start`, `load_complete`, `load_error`, and
 `load_cancelled`. Completion is emitted only after successful publication, even
 when the Tau stream ends early after an accepted structure. Callbacks run inline
@@ -109,6 +110,22 @@ and should be fast. An ordinary callback exception emits a warning and disables
 tracing for that load without stopping extraction. Use the context manager for
 terminal cleanup on errors or cancellation; use separate agents/displays for
 concurrent loads. Without `on_event`, the agent remains silent.
+
+## Building Diorama agents
+
+New agents should inherit from `BaseDioramaAgent` in `diorama/agents/base.py`.
+It shares provider/model configuration, trace dispatch and failure isolation,
+run lifecycle events, fresh Tau harness creation, and stream cleanup. Agents keep
+domain-specific public methods: `EbookLoaderAgent.load()` is unchanged.
+
+Wrap each operation in `_run()`, create its harness with `_create_harness()`, and
+consume events with `_consume()`. Set the yielded `RunOutcome`'s `message` and
+`details` after successful domain work. `_run()` emits completion only when its
+body exits successfully, or emits an error/cancellation event and re-raises the
+original exception. Separate instances are required for overlapping operations;
+sequential reuse resets callback-failure state. The base never closes the provider.
+
+See [the agent contributor guide](docs/agents.md) for an example and boundaries.
 
 ## Verification
 

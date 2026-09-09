@@ -9,18 +9,18 @@ import os
 import re
 import shutil
 import tempfile
-import warnings
 from pathlib import Path
 
 from pydantic import Field
-from tau_agent import AgentHarness, AgentHarnessConfig, AgentTool, AgentToolResult
+from tau_agent import AgentTool, AgentToolResult
 from tau_agent.messages import AssistantMessage
 from tau_agent.provider import ModelProvider
 
+from diorama.agents.base import BaseDioramaAgent
 from diorama.models.ebook_models import EbookDocument, EbookModel, StructurePlan
 from diorama.prompts import EBOOK_LOADER_AGENT_SYSTEM_PROMPT
 from diorama.utils.ebook_source import EbookLoadError, EbookSource
-from diorama.utils.trace_events import LoaderEvent, TraceCallback, TraceEvent
+from diorama.utils.trace_events import LoaderEvent, TraceCallback
 
 
 class PageRequest(EbookModel):
@@ -44,7 +44,7 @@ class NavigationRequest(EbookModel):
     limit: int = Field(default=4000, ge=1, le=8000)
 
 
-class EbookLoaderAgent:
+class EbookLoaderAgent(BaseDioramaAgent):
     """Interpret and save an EPUB using an explicitly supplied Tau provider.
 
     Each load uses a fresh harness; provider lifecycle belongs to the caller.
@@ -61,28 +61,8 @@ class EbookLoaderAgent:
         max_turns: int = 30,
         on_event: TraceCallback | None = None,
     ):
-        if not model.strip():
-            raise ValueError("model must be nonempty")
-        if max_turns < 1:
-            raise ValueError("max_turns must be at least 1")
-        self.provider = provider
-        self.model = model
+        super().__init__(provider, model, max_turns=max_turns, on_event=on_event)
         self.output_dir = Path(output_dir)
-        self.max_turns = max_turns
-        self.on_event = on_event
-        self._trace_failed = False
-
-    def _emit(self, event: TraceEvent) -> None:
-        if self.on_event is not None and not self._trace_failed:
-            try:
-                self.on_event(event)
-            except Exception:
-                self._trace_failed = True
-                warnings.warn(
-                    "Trace callback failed; tracing disabled for this load",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
 
     def _destination(self, path: Path, digest: str) -> Path:
         stem = (
@@ -93,16 +73,19 @@ class EbookLoaderAgent:
         return self.output_dir / f"{stem}-{digest}"
 
     async def load(self, epub_path: str | Path) -> EbookDocument:
-        self._trace_failed = False
-        self._emit(LoaderEvent("load_start", "Parsing EPUB", {"path": str(epub_path)}))
-        try:
-            return await self._load(epub_path)
-        except asyncio.CancelledError:
-            self._emit(LoaderEvent("load_cancelled", "Loading cancelled"))
-            raise
-        except Exception as exc:
-            self._emit(LoaderEvent("load_error", str(exc)))
-            raise
+        async with self._run(
+            event_prefix="load",
+            message="Parsing EPUB",
+            details={"path": str(epub_path)},
+        ) as outcome:
+            document = await self._load(epub_path)
+            outcome.message = document.title
+            outcome.details = {
+                "destination": str(
+                    self._destination(Path(epub_path), document.source_sha256).resolve()
+                )
+            }
+            return document
 
     async def _load(self, epub_path: str | Path) -> EbookDocument:
         path = Path(epub_path)
@@ -240,14 +223,8 @@ class EbookLoaderAgent:
                 submit,
             ),
         ]
-        harness = AgentHarness(
-            AgentHarnessConfig(
-                provider=self.provider,
-                model=self.model,
-                system=EBOOK_LOADER_AGENT_SYSTEM_PROMPT,
-                tools=tools,
-                max_turns=self.max_turns,
-            )
+        harness = self._create_harness(
+            system=EBOOK_LOADER_AGENT_SYSTEM_PROMPT, tools=tools
         )
         prompt = json.dumps(
             {
@@ -263,16 +240,10 @@ class EbookLoaderAgent:
             },
             ensure_ascii=False,
         )
-        stream = harness.prompt(prompt)
         try:
-            async for event in stream:
-                self._emit(event)
-                if document is not None:
-                    break
+            await self._consume(harness, prompt, stop_when=lambda: document is not None)
         except Exception as exc:
             raise EbookLoadError(f"Tau interpretation failed: {exc}") from exc
-        finally:
-            await stream.aclose()
         if document is None:
             errors = [
                 m.error_message
@@ -291,13 +262,6 @@ class EbookLoaderAgent:
         destination = self._destination(path, source.sha256)
         self._emit(LoaderEvent("publish_start", "Saving validated book"))
         self._publish(destination, source, document)
-        self._emit(
-            LoaderEvent(
-                "load_complete",
-                document.title,
-                {"destination": str(destination.resolve())},
-            )
-        )
         return document
 
     @staticmethod
