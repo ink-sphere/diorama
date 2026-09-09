@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import tempfile
+import warnings
 from pathlib import Path
 
 from pydantic import Field
@@ -19,6 +20,7 @@ from tau_agent.provider import ModelProvider
 from diorama.models.ebook_models import EbookDocument, EbookModel, StructurePlan
 from diorama.prompts import EBOOK_LOADER_AGENT_SYSTEM_PROMPT
 from diorama.utils.ebook_source import EbookLoadError, EbookSource
+from diorama.utils.trace_events import LoaderEvent, TraceCallback, TraceEvent
 
 
 class PageRequest(EbookModel):
@@ -57,6 +59,7 @@ class EbookLoaderAgent:
         *,
         output_dir: str | Path = ".diorama",
         max_turns: int = 30,
+        on_event: TraceCallback | None = None,
     ):
         if not model.strip():
             raise ValueError("model must be nonempty")
@@ -66,6 +69,20 @@ class EbookLoaderAgent:
         self.model = model
         self.output_dir = Path(output_dir)
         self.max_turns = max_turns
+        self.on_event = on_event
+        self._trace_failed = False
+
+    def _emit(self, event: TraceEvent) -> None:
+        if self.on_event is not None and not self._trace_failed:
+            try:
+                self.on_event(event)
+            except Exception:
+                self._trace_failed = True
+                warnings.warn(
+                    "Trace callback failed; tracing disabled for this load",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
     def _destination(self, path: Path, digest: str) -> Path:
         stem = (
@@ -76,8 +93,27 @@ class EbookLoaderAgent:
         return self.output_dir / f"{stem}-{digest}"
 
     async def load(self, epub_path: str | Path) -> EbookDocument:
+        self._trace_failed = False
+        self._emit(LoaderEvent("load_start", "Parsing EPUB", {"path": str(epub_path)}))
+        try:
+            return await self._load(epub_path)
+        except asyncio.CancelledError:
+            self._emit(LoaderEvent("load_cancelled", "Loading cancelled"))
+            raise
+        except Exception as exc:
+            self._emit(LoaderEvent("load_error", str(exc)))
+            raise
+
+    async def _load(self, epub_path: str | Path) -> EbookDocument:
         path = Path(epub_path)
         source = await asyncio.to_thread(EbookSource, path)
+        self._emit(
+            LoaderEvent(
+                "source_ready",
+                source.title,
+                {"units": len(source.units), "spine_documents": len(source.spine)},
+            )
+        )
         document = None
         last_validation = None
         outline = [
@@ -229,7 +265,8 @@ class EbookLoaderAgent:
         )
         stream = harness.prompt(prompt)
         try:
-            async for _ in stream:
+            async for event in stream:
+                self._emit(event)
                 if document is not None:
                     break
         except Exception as exc:
@@ -251,7 +288,16 @@ class EbookLoaderAgent:
                 reason += f"; last validation error: {last_validation}"
             raise EbookLoadError(reason)
         # Synchronous publication avoids background writes after task cancellation.
-        self._publish(self._destination(path, source.sha256), source, document)
+        destination = self._destination(path, source.sha256)
+        self._emit(LoaderEvent("publish_start", "Saving validated book"))
+        self._publish(destination, source, document)
+        self._emit(
+            LoaderEvent(
+                "load_complete",
+                document.title,
+                {"destination": str(destination.resolve())},
+            )
+        )
         return document
 
     @staticmethod

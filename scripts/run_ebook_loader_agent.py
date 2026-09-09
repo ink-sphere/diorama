@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 from tau_coding.credentials import FileCredentialStore
@@ -18,6 +19,7 @@ from tau_coding.provider_runtime import create_model_provider
 from diorama.agents import EbookLoaderAgent
 from diorama.utils.auth import login
 from diorama.utils.ebook_source import EbookLoadError
+from diorama.utils.trace import TraceDisplayCallback
 
 PROVIDER_NAME = "openai-codex"
 DEFAULT_MODEL = "gpt-5.6-sol"
@@ -52,6 +54,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run ChatGPT OAuth even when Tau already has stored credentials",
     )
+    parser.add_argument(
+        "--trace", action="store_true", help="Show rich agent traces on stderr"
+    )
+    parser.add_argument(
+        "--trace-full",
+        action="store_true",
+        help="Enable tracing with untruncated book excerpts (may contain private text)",
+    )
     return parser.parse_args()
 
 
@@ -77,14 +87,21 @@ async def run(args: argparse.Namespace) -> Path:
         thinking_level="medium",
     )
     try:
-        agent = EbookLoaderAgent(
-            provider,
-            selection.model,
-            output_dir=args.output_dir,
-            max_turns=args.max_turns,
+        display = (
+            TraceDisplayCallback(full_excerpts=args.trace_full)
+            if args.trace or args.trace_full
+            else nullcontext()
         )
-        document = await agent.load(epub)
-        destination = agent._destination(epub, document.source_sha256)
+        with display as trace:
+            agent = EbookLoaderAgent(
+                provider,
+                selection.model,
+                output_dir=args.output_dir,
+                max_turns=args.max_turns,
+                on_event=trace,
+            )
+            document = await agent.load(epub)
+            destination = agent._destination(epub, document.source_sha256)
     finally:
         await provider.aclose()
 

@@ -71,6 +71,45 @@ declarations, and expanded archives over 1 GB (or members over 256 MB) are rejec
 Structural coverage is checked deterministically; literary labels and hierarchy
 remain model judgments. No offline interpretation fallback is used.
 
+## Agent traces
+
+Enable Rich traces in the command-line runner:
+
+```sh
+uv run python scripts/run_ebook_loader_agent.py /path/to/book.epub --trace
+```
+
+Use `--trace-full` instead for untruncated excerpts. Traces can contain book text
+and local paths; do not share them without reviewing them. Output goes to stderr,
+with bounded previews by default. Redirected output is plain, without animations;
+`NO_COLOR` disables color. Normal final output remains on stdout.
+
+For programmatic use, pass the optional synchronous event callback:
+
+```python
+from diorama.utils.trace import TraceDisplayCallback
+
+with TraceDisplayCallback() as trace:
+    agent = EbookLoaderAgent(provider, model="your-model", on_event=trace)
+    document = await agent.load("/path/to/book.epub")
+```
+
+The display shows turns, tool arguments/results, validation errors and retries,
+elapsed times, provider-reported usage, completed assistant text and exposed
+reasoning summaries, and publication status. Interactive terminals also show live
+activity previews. It does not expose hidden reasoning, credentials, or provider
+signatures. Missing provider usage is not estimated.
+
+The callback accepts Tau `AgentEvent` objects and presentation-independent
+`LoaderEvent` objects from `diorama.utils.trace_events`. Loader event types are
+`load_start`, `source_ready`, `publish_start`, `load_complete`, `load_error`, and
+`load_cancelled`. Completion is emitted only after successful publication, even
+when the Tau stream ends early after an accepted structure. Callbacks run inline
+and should be fast. An ordinary callback exception emits a warning and disables
+tracing for that load without stopping extraction. Use the context manager for
+terminal cleanup on errors or cancellation; use separate agents/displays for
+concurrent loads. Without `on_event`, the agent remains silent.
+
 ## Verification
 
 ```sh
