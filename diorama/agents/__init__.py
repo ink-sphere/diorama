@@ -1,22 +1,7 @@
-"""Concrete agents built on top of diorama.core's ReAct agent framework."""
+"""Diorama literary agents."""
 
-from diorama.agents.ebook_loader import EbookLoaderAgent, EbookLoaderError
-from diorama.agents.ebook_scene_segmentation import (
-    EbookSceneSegmentationAgent,
-    SceneSegmentationError,
-)
-from diorama.agents.literary_research_agent import (
-    LiteraryResearchAgent,
-    LiteraryResearchError,
-    LiteraryResearchReport,
-)
+from diorama.agents.ebook_loader_agent import EbookLoaderAgent
+from diorama.models.ebook_models import EbookDocument, EbookSection
+from diorama.utils.ebook_source import EbookLoadError
 
-__all__ = [
-    "EbookLoaderAgent",
-    "EbookLoaderError",
-    "EbookSceneSegmentationAgent",
-    "LiteraryResearchAgent",
-    "LiteraryResearchError",
-    "LiteraryResearchReport",
-    "SceneSegmentationError",
-]
+__all__ = ["EbookDocument", "EbookLoadError", "EbookLoaderAgent", "EbookSection"]

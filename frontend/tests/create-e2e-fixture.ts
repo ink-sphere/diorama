@@ -1,0 +1,10 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { fixture } from "./fixtures.ts";
+const root = await fs.mkdtemp(path.join(os.tmpdir(), "diorama-e2e-"));
+const dir = path.join(root, "nested"); await fs.mkdir(dir);
+const { book, zip } = await fixture();
+await fs.writeFile(path.join(dir, "book.json"), JSON.stringify(book));
+await fs.writeFile(path.join(dir, "source.epub"), await zip.generateAsync({ type: "nodebuffer" }));
+console.log(root);

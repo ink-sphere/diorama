@@ -1,3 +1,3 @@
-from diorama.models.litellm_model import LiteLLMModel
+from diorama.models.ebook_models import EbookDocument, EbookSection
 
-__all__ = ["LiteLLMModel"]
+__all__ = ["EbookDocument", "EbookSection"]

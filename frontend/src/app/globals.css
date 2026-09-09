@@ -1,219 +1,78 @@
-@import "tailwindcss";
+@import "../styles/reader.css";
 
-/* next-themes toggles a class on <html>, so the dark variant keys off that class
-   rather than Tailwind v4's default prefers-color-scheme media query. */
-@custom-variant dark (&:where(.dark, .dark *));
-
-/* Warm parchment in light, low-glare charcoal in dark. Values are OKLCH so the
-   two themes stay perceptually matched instead of one looking muddier. */
 :root {
-  --shell: oklch(0.964 0.006 85);
-  --shell-raised: oklch(0.985 0.005 85);
-  --paper: oklch(0.992 0.004 90);
-  --paper-edge: oklch(0.93 0.008 80);
-  --ink: oklch(0.24 0.012 60);
-  --ink-soft: oklch(0.47 0.014 62);
-  --ink-faint: oklch(0.63 0.012 65);
-  --rule: oklch(0.9 0.008 80);
-  --rule-strong: oklch(0.83 0.01 78);
-  --accent: oklch(0.52 0.088 52);
-  --accent-soft: oklch(0.9 0.03 65);
-  --danger: oklch(0.52 0.13 27);
-  --shadow-page: 0 1px 2px oklch(0.3 0.02 60 / 0.06),
-    0 18px 40px -24px oklch(0.3 0.02 60 / 0.35);
-
-  /* Categorical series for the cost charts. Held at one lightness and one chroma
-     so no series shouts louder than its neighbours — they're distinguished by hue
-     alone, which keeps a five-provider bar chart from turning into a carnival. The
-     first is the accent itself, since a single-series chart should read as "the
-     app's colour" rather than as an arbitrary pick from a palette. */
-  --chart-1: oklch(0.52 0.088 52);
-  --chart-2: oklch(0.53 0.082 168);
-  --chart-3: oklch(0.53 0.085 265);
-  --chart-4: oklch(0.55 0.088 330);
-  --chart-5: oklch(0.56 0.082 110);
-  --chart-6: oklch(0.54 0.08 210);
+  color-scheme: light;
+  --bg: oklch(1 0 0); --surface: oklch(.965 .005 110); --ink: oklch(.25 .008 110);
+  --muted: oklch(.49 .012 110); --line: oklch(.89 .008 110);
+  --accent: oklch(.42 .075 110); --selected: oklch(.94 .026 110);
+  --error: oklch(.42 .12 25); --z-bar: 20; --z-footer: 20;
 }
-
-.dark {
-  --shell: oklch(0.185 0.008 60);
-  --shell-raised: oklch(0.225 0.009 60);
-  --paper: oklch(0.246 0.009 62);
-  --paper-edge: oklch(0.2 0.008 60);
-  --ink: oklch(0.925 0.012 80);
-  --ink-soft: oklch(0.73 0.012 78);
-  --ink-faint: oklch(0.58 0.011 75);
-  --rule: oklch(0.33 0.009 62);
-  --rule-strong: oklch(0.42 0.01 62);
-  --accent: oklch(0.76 0.09 62);
-  --accent-soft: oklch(0.38 0.04 55);
-  --danger: oklch(0.68 0.14 27);
-  --shadow-page: 0 1px 2px oklch(0 0 0 / 0.4), 0 22px 48px -26px oklch(0 0 0 / 0.75);
-
-  /* Same hues, lifted in lightness and eased in chroma: a fill that reads as
-     "medium" on parchment reads as a hole punched in a dark shell. */
-  --chart-1: oklch(0.76 0.09 62);
-  --chart-2: oklch(0.75 0.085 168);
-  --chart-3: oklch(0.74 0.088 265);
-  --chart-4: oklch(0.75 0.09 330);
-  --chart-5: oklch(0.78 0.085 110);
-  --chart-6: oklch(0.75 0.082 210);
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: oklch(.18 0 0); --surface: oklch(.22 .004 110); --ink: oklch(.89 .006 110);
+  --muted: oklch(.72 .014 110); --line: oklch(.34 .008 110);
+  --accent: oklch(.8 .085 110); --selected: oklch(.3 .025 110); --error: oklch(.78 .1 25);
 }
-
-@theme inline {
-  --color-shell: var(--shell);
-  --color-shell-raised: var(--shell-raised);
-  --color-paper: var(--paper);
-  --color-paper-edge: var(--paper-edge);
-  --color-ink: var(--ink);
-  --color-ink-soft: var(--ink-soft);
-  --color-ink-faint: var(--ink-faint);
-  --color-rule: var(--rule);
-  --color-rule-strong: var(--rule-strong);
-  --color-accent: var(--accent);
-  --color-accent-soft: var(--accent-soft);
-  --color-danger: var(--danger);
-  --color-chart-1: var(--chart-1);
-  --color-chart-2: var(--chart-2);
-  --color-chart-3: var(--chart-3);
-  --color-chart-4: var(--chart-4);
-  --color-chart-5: var(--chart-5);
-  --color-chart-6: var(--chart-6);
-
-  --font-serif: var(--font-newsreader), ui-serif, Georgia, serif;
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-
-  --shadow-page: var(--shadow-page);
+* { box-sizing: border-box; }
+html { scrollbar-gutter: stable; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: Arial, Helvetica, sans-serif; font-size: 14px; -webkit-font-smoothing: antialiased; }
+button, input { font: inherit; }
+button, a, input { -webkit-tap-highlight-color: transparent; }
+button { color: inherit; cursor: pointer; }
+button:disabled { opacity: .4; cursor: default; }
+a { color: inherit; text-decoration: none; }
+button { border: 0; background: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 3px; }
+button:hover:not(:disabled) { color: var(--accent); }
+h1,h2,h3 { text-wrap: balance; }
+p { text-wrap: pretty; }
+.app-bar { height: 76px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 4.5%; background: var(--bg); }
+.wordmark { display: flex; align-items: center; gap: 10px; font-size: 23px; letter-spacing: -.04em; font-weight: 600; }
+.wordmark svg { color: var(--accent); }
+.bar-label { margin-left: 22px; border-left: 1px solid var(--line); padding-left: 24px; font-size: 12px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+.icon-button { display: inline-flex; justify-content: center; align-items: center; min-width: 36px; min-height: 36px; border-radius: 5px; }
+.icon-button:hover { background: var(--surface); }
+.text-button { display: inline-flex; align-items: center; gap: 9px; color: var(--muted); padding: 10px 0; font-size: 12px; }
+.library { max-width: 1220px; margin: 0 auto; padding: 66px 40px 24px; }
+.library-heading { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 38px; gap: 20px; }
+.quiet-label { margin: 0 0 14px; font-size: 13px; color: var(--muted); }
+.library h1 { margin: 0; font: 42px/1.2 Georgia,serif; letter-spacing: -.025em; display: flex; gap: 16px; align-items: center; }
+.count { font: 12px Arial,sans-serif; color: var(--muted); padding: 4px 7px; background: var(--surface); border-radius: 4px; }
+.shelf-toolbar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); margin-bottom: 32px; padding-bottom: 15px; }
+.shelf-toolbar > span { font-size: 13px; font-weight: 600; }
+.search { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.search input { background: transparent; border: 0; color: var(--ink); padding: 9px 4px; width: 210px; font-size: 12px; }
+.search input::placeholder { color: var(--muted); }
+.book-shelf { display: flex; gap: 42px; flex-wrap: wrap; }
+.book-tile { display: block; width: 264px; }
+.cover-stage { height: 340px; background: var(--surface); position: relative; display: flex; align-items: center; justify-content: center; border-radius: 4px; }
+.cover-object { height: 278px; max-width: 204px; transition: transform 180ms ease-out; box-shadow: 4px 5px 8px oklch(.1 0 0 / .18); }
+.cover-object img { width: auto; max-width: 204px; height: 278px; object-fit: cover; display: block; }
+.book-tile:hover .cover-object { transform: translateY(-4px); }
+.open-book { position: absolute; right: 12px; bottom: 12px; color: var(--muted); }
+.book-caption h2 { font: 20px/1.3 Georgia,serif; margin: 21px 0 7px; letter-spacing: -.015em; }
+.book-caption p { margin: 0; font-size: 12px; color: var(--muted); }
+.book-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 20px; font-size: 11px; color: var(--muted); }
+.read-action { color: var(--accent); }
+.type-cover { height: 278px; width: 195px; background: var(--accent); color: var(--bg); padding: 22px; display: flex; flex-direction: column; justify-content: space-between; }
+.type-cover span { font: 26px/1.3 Georgia,serif; }
+.type-cover small { font-size: 11px; }
+.library-footer { margin-top: 96px; padding-top: 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 16px; color: var(--muted); font-size: 11px; }
+.library-footer span:first-child { font: italic 15px Georgia,serif; }
+.empty { padding: 70px 24px; margin: auto; max-width: 760px; text-align: center; line-height: 1.7; color: var(--muted); }
+.empty h1,.empty h2 { color: var(--ink); font-family: Georgia,serif; font-weight: 400; }
+.empty p { max-width: 460px; margin: 12px auto; }
+.notice { padding: 20px; border: 1px solid var(--line); border-radius: 6px; color: var(--error); margin: 20px 0; line-height: 1.6; }
+.notice button { text-decoration: underline; display: block; padding: 8px 0 0; }
+.damaged-book { width: 264px; padding: 24px; border: 1px solid var(--line); border-radius: 4px; overflow-wrap: anywhere; }
+.damaged-book h2 { font-size: 15px; }.damaged-book p { color: var(--error); }
+.shelf-skeleton { display: flex; gap: 40px; }.shelf-skeleton > div { width: 264px; height: 340px; background: var(--surface); border-radius: 4px; }
+.reading-skeleton { padding: 60px 0; }.reading-skeleton i { display: block; height: 12px; background: var(--surface); margin-bottom: 22px; border-radius: 2px; }.reading-skeleton i:nth-child(3n) { width: 75%; }
+@media(max-width: 800px) {
+  .app-bar { padding: 0 20px; height: 64px; }.bar-label { display: none; }
+  .library { padding: 40px 22px 24px; }.library h1 { font-size: 34px; }
+  .library-heading { align-items: start; }.library-heading .text-button { font-size: 0; }.library-heading .text-button svg { width: 18px; height: 18px; }
+  .shelf-toolbar { gap: 12px; }.search input { width: 165px; }.book-shelf { gap: 32px; }.book-tile { width: min(264px,100%); }
+  .library-footer { margin-top: 64px; flex-direction: column; }.shelf-skeleton > div:not(:first-child) { display: none; }
 }
-
-@layer base {
-  html {
-    color-scheme: light;
-  }
-
-  html.dark {
-    color-scheme: dark;
-  }
-
-  body {
-    background-color: var(--shell);
-    color: var(--ink);
-    font-family: var(--font-sans);
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-  }
-
-  ::selection {
-    background-color: var(--accent-soft);
-    color: var(--ink);
-  }
-
-  /* Quiet, paper-coloured scrollbars — default chrome is loud enough to break the
-     illusion of a page in an otherwise borderless reading surface. */
-  * {
-    scrollbar-width: thin;
-    scrollbar-color: var(--rule-strong) transparent;
-  }
-
-  ::-webkit-scrollbar {
-    width: 9px;
-    height: 9px;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background-color: var(--rule-strong);
-    border-radius: 999px;
-    border: 3px solid transparent;
-    background-clip: content-box;
-  }
-
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
-}
-
-@layer components {
-  /* Small-caps label used for every piece of chrome text: TOC labels, statuses,
-     metadata. Keeps the UI's voice clearly separate from the book's own voice. */
-  .label {
-    font-family: var(--font-sans);
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    font-size: 0.6875rem;
-    font-weight: 500;
-  }
-
-  /* The reader's typeset column. Text reflows into fixed-width CSS columns and a
-     page turn is a translate across them — see usePagination. */
-  .typeset {
-    font-family: var(--font-serif);
-    color: var(--ink);
-    hyphens: auto;
-    -webkit-hyphens: auto;
-    orphans: 2;
-    widows: 2;
-  }
-
-  .typeset p {
-    margin: 0;
-    text-indent: 1.35em;
-    text-align: justify;
-  }
-
-  /* Scoped per scene, not per section: a paragraph opening a scene starts a fresh
-     page, where an indent would be reading a break that isn't there. */
-  .typeset p:first-of-type {
-    text-indent: 0;
-  }
-
-  /* A scene is the page unit. Forcing a column break before each one means a scene
-     that outgrows a page simply flows onto the next, while the following scene still
-     opens on a page of its own — the browser does the fitting, as it does for lines. */
-  .typeset .scene-break {
-    break-before: column;
-    -webkit-column-break-before: always;
-  }
-
-  /* Marks the end of a scene, so the whitespace below it reads as a held pause
-     rather than a rendering fault. `break-before: avoid` keeps it on the page it
-     closes instead of stranding it alone at the top of the next. */
-  .typeset .scene-end {
-    margin-top: 1.5em;
-    text-align: center;
-    text-indent: 0;
-    font-size: 0.9em;
-    color: var(--ink-faint);
-    break-before: avoid;
-    -webkit-column-break-before: avoid;
-  }
-
-  /* Drop cap on the section's opening paragraph only — set via ::first-letter so
-     it stays correct wherever pagination lands. Scoped to the first scene, or every
-     scene would open with one. */
-  .typeset[data-opening="true"] [data-scene="0"] p:first-of-type::first-letter {
-    float: left;
-    font-size: 3.1em;
-    line-height: 0.82;
-    padding: 0.06em 0.08em 0 0;
-    font-weight: 500;
-  }
-}
-
-@layer utilities {
-  .no-scrollbar::-webkit-scrollbar {
-    display: none;
-  }
-
-  .no-scrollbar {
-    scrollbar-width: none;
-  }
-
-  /* A page is paper first: a faint warm gradient, never a flat rectangle. */
-  .page-surface {
-    background-image: linear-gradient(
-      to bottom,
-      var(--paper) 0%,
-      color-mix(in oklch, var(--paper) 94%, var(--paper-edge)) 100%
-    );
-  }
-}
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation:none!important; transition:none!important; } }
