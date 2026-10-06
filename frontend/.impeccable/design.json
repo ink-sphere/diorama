@@ -1,0 +1,412 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-06T19:29:52.843011+00:00",
+  "title": "Design System: Diorama reader",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "tonalRamp": [
+          "oklch(15% 0.0082 91.48)",
+          "oklch(26% 0.0082 91.48)",
+          "oklch(38% 0.0082 91.48)",
+          "oklch(49% 0.0082 91.48)",
+          "oklch(61% 0.0082 91.48)",
+          "oklch(72% 0.0082 91.48)",
+          "oklch(84% 0.0082 91.48)",
+          "oklch(95% 0.0082 91.48)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "tonalRamp": [
+          "oklch(15% 0.0109 95.17)",
+          "oklch(26% 0.0109 95.17)",
+          "oklch(38% 0.0109 95.17)",
+          "oklch(49% 0.0109 95.17)",
+          "oklch(61% 0.0109 95.17)",
+          "oklch(72% 0.0109 95.17)",
+          "oklch(84% 0.0109 95.17)",
+          "oklch(95% 0.0109 95.17)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "oklch(15% 0.0144 136.69)",
+          "oklch(26% 0.0144 136.69)",
+          "oklch(38% 0.0144 136.69)",
+          "oklch(49% 0.0144 136.69)",
+          "oklch(61% 0.0144 136.69)",
+          "oklch(72% 0.0144 136.69)",
+          "oklch(84% 0.0144 136.69)",
+          "oklch(95% 0.0144 136.69)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "tonalRamp": [
+          "oklch(15% 0.0166 128.83)",
+          "oklch(26% 0.0166 128.83)",
+          "oklch(38% 0.0166 128.83)",
+          "oklch(49% 0.0166 128.83)",
+          "oklch(61% 0.0166 128.83)",
+          "oklch(72% 0.0166 128.83)",
+          "oklch(84% 0.0166 128.83)",
+          "oklch(95% 0.0166 128.83)"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Rule",
+        "tonalRamp": [
+          "oklch(15% 0.0154 123.07)",
+          "oklch(26% 0.0154 123.07)",
+          "oklch(38% 0.0154 123.07)",
+          "oklch(49% 0.0154 123.07)",
+          "oklch(61% 0.0154 123.07)",
+          "oklch(72% 0.0154 123.07)",
+          "oklch(84% 0.0154 123.07)",
+          "oklch(95% 0.0154 123.07)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Accent",
+        "tonalRamp": [
+          "oklch(15% 0.0551 143.75)",
+          "oklch(26% 0.0551 143.75)",
+          "oklch(38% 0.0551 143.75)",
+          "oklch(49% 0.0551 143.75)",
+          "oklch(61% 0.0551 143.75)",
+          "oklch(72% 0.0551 143.75)",
+          "oklch(84% 0.0551 143.75)",
+          "oklch(95% 0.0551 143.75)"
+        ]
+      },
+      "accent-hover": {
+        "role": "primary",
+        "displayName": "Accent hover",
+        "tonalRamp": [
+          "oklch(15% 0.0509 143.58)",
+          "oklch(26% 0.0509 143.58)",
+          "oklch(38% 0.0509 143.58)",
+          "oklch(49% 0.0509 143.58)",
+          "oklch(61% 0.0509 143.58)",
+          "oklch(72% 0.0509 143.58)",
+          "oklch(84% 0.0509 143.58)",
+          "oklch(95% 0.0509 143.58)"
+        ]
+      },
+      "selection": {
+        "role": "neutral",
+        "displayName": "Selection",
+        "tonalRamp": [
+          "oklch(15% 0.0441 121.42)",
+          "oklch(26% 0.0441 121.42)",
+          "oklch(38% 0.0441 121.42)",
+          "oklch(49% 0.0441 121.42)",
+          "oklch(61% 0.0441 121.42)",
+          "oklch(72% 0.0441 121.42)",
+          "oklch(84% 0.0441 121.42)",
+          "oklch(95% 0.0441 121.42)"
+        ]
+      },
+      "row-hover": {
+        "role": "neutral",
+        "displayName": "Row hover",
+        "tonalRamp": [
+          "oklch(15% 0.0119 106.63)",
+          "oklch(26% 0.0119 106.63)",
+          "oklch(38% 0.0119 106.63)",
+          "oklch(49% 0.0119 106.63)",
+          "oklch(61% 0.0119 106.63)",
+          "oklch(72% 0.0119 106.63)",
+          "oklch(84% 0.0119 106.63)",
+          "oklch(95% 0.0119 106.63)"
+        ]
+      },
+      "cover-fallback": {
+        "role": "neutral",
+        "displayName": "Cover fallback",
+        "tonalRamp": [
+          "oklch(15% 0.0148 115.05)",
+          "oklch(26% 0.0148 115.05)",
+          "oklch(38% 0.0148 115.05)",
+          "oklch(49% 0.0148 115.05)",
+          "oklch(61% 0.0148 115.05)",
+          "oklch(72% 0.0148 115.05)",
+          "oklch(84% 0.0148 115.05)",
+          "oklch(95% 0.0148 115.05)"
+        ]
+      },
+      "error-surface": {
+        "role": "neutral",
+        "displayName": "Error surface",
+        "tonalRamp": [
+          "oklch(15% 0.0186 57.21)",
+          "oklch(26% 0.0186 57.21)",
+          "oklch(38% 0.0186 57.21)",
+          "oklch(49% 0.0186 57.21)",
+          "oklch(61% 0.0186 57.21)",
+          "oklch(72% 0.0186 57.21)",
+          "oklch(84% 0.0186 57.21)",
+          "oklch(95% 0.0186 57.21)"
+        ]
+      },
+      "error-ink": {
+        "role": "neutral",
+        "displayName": "Error ink",
+        "tonalRamp": [
+          "oklch(15% 0.1028 39.31)",
+          "oklch(26% 0.1028 39.31)",
+          "oklch(38% 0.1028 39.31)",
+          "oklch(49% 0.1028 39.31)",
+          "oklch(61% 0.1028 39.31)",
+          "oklch(72% 0.1028 39.31)",
+          "oklch(84% 0.1028 39.31)",
+          "oklch(95% 0.1028 39.31)"
+        ]
+      },
+      "night-paper": {
+        "role": "neutral",
+        "displayName": "Night paper",
+        "tonalRamp": [
+          "oklch(15% 0.0114 156.31)",
+          "oklch(26% 0.0114 156.31)",
+          "oklch(38% 0.0114 156.31)",
+          "oklch(49% 0.0114 156.31)",
+          "oklch(61% 0.0114 156.31)",
+          "oklch(72% 0.0114 156.31)",
+          "oklch(84% 0.0114 156.31)",
+          "oklch(95% 0.0114 156.31)"
+        ]
+      },
+      "night-surface": {
+        "role": "neutral",
+        "displayName": "Night surface",
+        "tonalRamp": [
+          "oklch(15% 0.0175 151.89)",
+          "oklch(26% 0.0175 151.89)",
+          "oklch(38% 0.0175 151.89)",
+          "oklch(49% 0.0175 151.89)",
+          "oklch(61% 0.0175 151.89)",
+          "oklch(72% 0.0175 151.89)",
+          "oklch(84% 0.0175 151.89)",
+          "oklch(95% 0.0175 151.89)"
+        ]
+      },
+      "night-ink": {
+        "role": "neutral",
+        "displayName": "Night ink",
+        "tonalRamp": [
+          "oklch(15% 0.0166 121.78)",
+          "oklch(26% 0.0166 121.78)",
+          "oklch(38% 0.0166 121.78)",
+          "oklch(49% 0.0166 121.78)",
+          "oklch(61% 0.0166 121.78)",
+          "oklch(72% 0.0166 121.78)",
+          "oklch(84% 0.0166 121.78)",
+          "oklch(95% 0.0166 121.78)"
+        ]
+      },
+      "night-muted": {
+        "role": "neutral",
+        "displayName": "Night muted",
+        "tonalRamp": [
+          "oklch(15% 0.0264 132.20)",
+          "oklch(26% 0.0264 132.20)",
+          "oklch(38% 0.0264 132.20)",
+          "oklch(49% 0.0264 132.20)",
+          "oklch(61% 0.0264 132.20)",
+          "oklch(72% 0.0264 132.20)",
+          "oklch(84% 0.0264 132.20)",
+          "oklch(95% 0.0264 132.20)"
+        ]
+      },
+      "night-rule": {
+        "role": "neutral",
+        "displayName": "Night rule",
+        "tonalRamp": [
+          "oklch(15% 0.0213 145.13)",
+          "oklch(26% 0.0213 145.13)",
+          "oklch(38% 0.0213 145.13)",
+          "oklch(49% 0.0213 145.13)",
+          "oklch(61% 0.0213 145.13)",
+          "oklch(72% 0.0213 145.13)",
+          "oklch(84% 0.0213 145.13)",
+          "oklch(95% 0.0213 145.13)"
+        ]
+      },
+      "night-accent": {
+        "role": "primary",
+        "displayName": "Night accent",
+        "tonalRamp": [
+          "oklch(15% 0.0637 130.66)",
+          "oklch(26% 0.0637 130.66)",
+          "oklch(38% 0.0637 130.66)",
+          "oklch(49% 0.0637 130.66)",
+          "oklch(61% 0.0637 130.66)",
+          "oklch(72% 0.0637 130.66)",
+          "oklch(84% 0.0637 130.66)",
+          "oklch(95% 0.0637 130.66)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Library heading",
+        "purpose": "The introductory library heading."
+      },
+      "title": {
+        "displayName": "Book title",
+        "purpose": "Library row titles; responsive reductions are documented in DESIGN.md."
+      },
+      "body": {
+        "displayName": "Reading text",
+        "purpose": "Default reading size; reader settings persist a 15\u201328px choice."
+      },
+      "label": {
+        "displayName": "Interface label",
+        "purpose": "Contents, controls, and search."
+      },
+      "button": {
+        "displayName": "Action label",
+        "purpose": "Primary and quiet opening actions."
+      }
+    },
+    "shadows": [
+      {
+        "name": "book-cover",
+        "value": "2px 4px 8px #272c2514",
+        "purpose": "A slight physical cover lift."
+      },
+      {
+        "name": "settings-panel",
+        "value": "0 10px 32px #00000024",
+        "purpose": "Separate the floating settings panel from reader content."
+      },
+      {
+        "name": "mobile-contents",
+        "value": "6px 8px 26px #0000001a",
+        "purpose": "Separate the disclosed mobile contents rail."
+      }
+    ],
+    "motion": [
+      {
+        "name": "row-hover",
+        "value": "background-color 180ms ease-out",
+        "purpose": "Library row pointer feedback; disabled under reduced motion."
+      },
+      {
+        "name": "loading-spin",
+        "value": "spin 1s linear infinite",
+        "purpose": "Loading status only; disabled under reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "mobile",
+        "value": "680px"
+      },
+      {
+        "name": "medium",
+        "value": "900px"
+      },
+      {
+        "name": "wide-reader",
+        "value": "1500px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "A solid green recovery or opening action.",
+      "html": "<button class=\"ds-primary\">Open a book</button>",
+      "css": ".ds-primary{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:42px;padding:10px 17px;border:1px solid var(--accent,#456044);background:var(--accent,#456044);color:var(--paper,#f7f5ef);font:500 13px \"Work Sans\",sans-serif;border-radius:6px;cursor:pointer;}.ds-primary:hover:not(:disabled){background:#354d34}.ds-primary:focus-visible { outline: 2px solid var(--accent, #456044); outline-offset: 4px; }.ds-primary:disabled{opacity:.45;cursor:default}"
+    },
+    {
+      "name": "Quiet button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "The restrained file-import action.",
+      "html": "<button class=\"ds-quiet\">Choose a file<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 12h14M12 5l7 7-7 7\"/></svg></button>",
+      "css": ".ds-quiet{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:42px;padding:10px 17px;border:1px solid var(--accent,#456044);background:var(--accent,#456044);color:var(--paper,#f7f5ef);font:500 13px \"Work Sans\",sans-serif;border-radius:6px;cursor:pointer;background:transparent;border-color:var(--rule,#d9ddd2);color:var(--ink,#272c25)}.ds-quiet:hover:not(:disabled){background:var(--surface,#eeece4)}.ds-quiet:focus-visible { outline: 2px solid var(--accent, #456044); outline-offset: 4px; }.ds-quiet:disabled{opacity:.45;cursor:default}"
+    },
+    {
+      "name": "Icon button",
+      "kind": "button",
+      "refersTo": "button-icon",
+      "description": "Compact reader and library utility controls.",
+      "html": "<button class=\"ds-icon\" aria-label=\"Next section\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 12h14M12 5l7 7-7 7\"/></svg></button>",
+      "css": ".ds-icon{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border:0;border-radius:6px;background:transparent;color:var(--ink,#272c25);cursor:pointer}.ds-icon:hover:not(:disabled){background:var(--surface,#eeece4)}.ds-icon:focus-visible { outline: 2px solid var(--accent, #456044); outline-offset: 4px; }.ds-icon:disabled{opacity:.45;cursor:default}"
+    },
+    {
+      "name": "Library search",
+      "kind": "input",
+      "refersTo": "search",
+      "description": "A transparent title, author, or run filter.",
+      "html": "<label class=\"ds-search\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><circle cx=\"11\" cy=\"11\" r=\"8\"/><path d=\"m21 21-4.3-4.3\"/></svg><input aria-label=\"Search books\" placeholder=\"Search your library\"></label>",
+      "css": ".ds-search{display:flex;align-items:center;gap:10px;color:var(--muted,#64695f)}.ds-search input{width:205px;padding:9px 2px;border:0;border-radius:0;background:transparent;color:var(--ink,#272c25);font:12px \"Work Sans\",sans-serif}.ds-search input::placeholder{color:var(--muted,#64695f);opacity:1}.ds-search input:focus-visible { outline: 2px solid var(--accent, #456044); outline-offset: 4px; }"
+    },
+    {
+      "name": "Contents navigation",
+      "kind": "nav",
+      "refersTo": "contents-item",
+      "description": "Separate branch disclosure and selectable group/text nodes preserve the source hierarchy.",
+      "html": "<nav class=\"ds-contents\" aria-label=\"Book contents\"><ol><li><div class=\"ds-row\"><button class=\"ds-disclosure\" aria-label=\"Collapse Part one\" aria-expanded=\"true\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" aria-hidden=\"true\"><path d=\"m6 9 6 6 6-6\"/></svg></button><button class=\"ds-node\" aria-current=\"location\">Part one<span class=\"ds-type\">part</span></button></div><ol class=\"ds-children\"><li><div class=\"ds-row\"><span class=\"ds-spacer\"></span><button class=\"ds-node\">Chapter one<span class=\"ds-type\">chapter</span></button></div></li><li><div class=\"ds-row\"><span class=\"ds-spacer\"></span><button class=\"ds-node\">Chapter two<span class=\"ds-type\">chapter</span></button></div></li></ol></li></ol></nav>",
+      "css": ".ds-contents{width:236px;color:var(--ink,#272c25);font:12px/1.5 \"Work Sans\",sans-serif}.ds-contents ol{list-style:none;margin:0;padding:0}.ds-contents .ds-children{padding-left:16px}.ds-row{display:flex;align-items:flex-start}.ds-node{flex:1;min-width:0;border:0;border-radius:5px;padding:11px 12px;text-align:left;background:transparent;color:inherit;font:inherit;cursor:pointer;overflow-wrap:anywhere}.ds-disclosure,.ds-spacer{width:24px;flex-shrink:0}.ds-disclosure{height:36px;margin-top:4px;display:flex;align-items:center;justify-content:center;padding:0;border:0;background:transparent;color:inherit;cursor:pointer}.ds-type{display:block;font-size:10px;color:var(--muted,#64695f);margin-top:4px}.ds-node:hover,.ds-node[aria-current]{background:var(--surface,#eeece4)}.ds-node[aria-current]{color:var(--accent,#456044);font-weight:500}.ds-contents button:focus-visible{outline:2px solid var(--accent,#456044);outline-offset:4px}"
+    },
+    {
+      "name": "Segmented settings",
+      "kind": "button",
+      "description": "Selected reading typeface or theme.",
+      "html": "<div class=\"ds-segmented\"><button aria-pressed=\"true\">Literata</button><button aria-pressed=\"false\">Work Sans</button></div>",
+      "css": ".ds-segmented{display:flex;width:237px;background:var(--surface,#eeece4);border-radius:6px;padding:3px;gap:3px}.ds-segmented button{display:flex;align-items:center;justify-content:center;gap:7px;flex:1;border:0;border-radius:4px;padding:8px;background:transparent;color:var(--ink,#272c25);font:12px \"Work Sans\",sans-serif;cursor:pointer}.ds-segmented button[aria-pressed=\"true\"]{background:var(--paper,#f7f5ef);color:var(--accent,#456044)}.ds-segmented button:focus-visible { outline: 2px solid var(--accent, #456044); outline-offset: 4px; }"
+    },
+    {
+      "name": "Settings panel",
+      "kind": "card",
+      "refersTo": "settings-panel",
+      "description": "A floating panel for persistent reader preferences.",
+      "html": "<section class=\"ds-panel\"><h3>Make yourself comfortable</h3><label>Text size <span>19px</span></label><input type=\"range\" aria-label=\"Text size\" min=\"15\" max=\"28\" value=\"19\"></section>",
+      "css": ".ds-panel{box-sizing:border-box;width:285px;padding:24px;background:var(--paper,#f7f5ef);color:var(--ink,#272c25);box-shadow:0 10px 32px #00000024;border-radius:12px}.ds-panel h3{font:400 17px/1.45 \"Literata\",serif;margin:0 0 26px}.ds-panel label{display:flex;justify-content:space-between;font:12px \"Work Sans\",sans-serif}.ds-panel input{display:block;width:100%;margin:16px 0 24px;accent-color:var(--accent,#456044)}.ds-panel input:focus-visible { outline: 2px solid var(--accent, #456044); outline-offset: 4px; }"
+    },
+    {
+      "name": "Ruled library row",
+      "kind": "custom",
+      "description": "A full-width opening action with the implemented missing-cover fallback.",
+      "html": "<button class=\"ds-row\"><span class=\"ds-cover\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 7v14M3 18V3h3a6 6 0 0 1 6 4 6 6 0 0 1 6-4h3v15h-3a6 6 0 0 0-6 3 6 6 0 0 0-6-3z\"/></svg><span>Book title</span></span><span class=\"ds-information\"><span class=\"ds-author\">Author</span><strong>Book title</strong><span class=\"ds-metadata\">12 sections</span></span><span class=\"ds-action\">Start reading <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 12h14M12 5l7 7-7 7\"/></svg></span></button>",
+      "css": ".ds-row{display:flex;align-items:center;gap:28px;width:100%;padding:28px 0;text-align:left;border:0;border-bottom:1px solid var(--rule,#d9ddd2);background:transparent;color:var(--ink,#272c25);transition:background-color 180ms ease-out;cursor:pointer}.ds-row:hover:not(:disabled){background:#eeeee5}.ds-row:focus-visible { outline: 2px solid var(--accent, #456044); outline-offset: 4px; }.ds-cover{display:flex;flex-direction:column;justify-content:space-between;align-items:flex-start;flex-shrink:0;box-sizing:border-box;width:92px;height:130px;padding:13px;overflow:hidden;background:#e5e7dc;border-radius:3px 6px 6px 3px;box-shadow:2px 4px 8px #272c2514;color:var(--accent,#456044)}.ds-cover span{font:10px/1.35 \"Literata\",serif}.ds-information{flex:1;min-width:0}.ds-author{font:12px \"Work Sans\",sans-serif;color:var(--muted,#64695f)}.ds-information strong{display:block;font:400 23px/1.4 \"Literata\",serif;letter-spacing:-.018em;margin:7px 0 13px}.ds-metadata{font:11px \"Work Sans\",sans-serif;color:var(--muted,#64695f)}.ds-action{display:flex;align-items:center;gap:12px;flex-shrink:0;padding:0 6px 0 20px;color:var(--accent,#456044);font:500 12px \"Work Sans\",sans-serif}.ds-row:disabled{opacity:.45;cursor:default}@media(prefers-reduced-motion:reduce){.ds-row{transition:none}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The independent literary review",
+    "overview": "An independent literary review frames local ebook runs as a calm reading library. Warm paper, Literata, restrained green, fine rules, and real ebook covers give the interface a quiet editorial character.\n\nThe reader preserves source hierarchy in a conventional nested contents rail and leaves a generous column for book content. Work Sans keeps navigation and settings distinct from the literary text; mobile disclosures and saved reading preferences support the same reading experience at smaller widths.",
+    "keyCharacteristics": [
+      "Warm paper and restrained green.",
+      "Literata reading and headings; Work Sans interface.",
+      "Ruled library rows with actual ebook covers.",
+      "Nested contents and a generous reading column."
+    ],
+    "rules": [],
+    "dos": [
+      "Do use real ebook covers when available and the existing typographic fallback when unavailable.",
+      "Do distinguish book typography from interface labels and keep source structure visible in contents.",
+      "Do preserve visible keyboard focus, current-section states, and reduced-motion behavior.",
+      "Do carry the paper/night palette through reader controls and preserve saved reading preferences."
+    ],
+    "donts": [
+      "Don't replace the ruled library list with a dashboard card grid.",
+      "Don't add ornamental imagery, gradients, or shadows behind book text.",
+      "Don't invent book metadata or introduce generated artwork into the local library."
+    ]
+  }
+}

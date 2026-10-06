@@ -227,3 +227,5 @@ frontend/*.tsbuildinfo
 
 # Diorama runtime data (uploads, extracted structures, sessions, library index)
 .diorama_data/
+books/
+.ebook-runs/

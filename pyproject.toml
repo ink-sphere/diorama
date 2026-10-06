@@ -3,7 +3,7 @@ name = "diorama"
 version = "0.0.1"
 description = "Ebook reader for the 21st century"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.14.3",
     "ebooklib>=0.20",
@@ -25,6 +25,7 @@ dependencies = [
     "litellm>=1.90.0",
     "weave>=0.52.43",
     "httpx>=0.28.1",
+    "tau-ai>=0.4.7",
 ]
 
 [dependency-groups]

@@ -1,36 +1,32 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Diorama reader
 
-## Getting Started
-
-First, run the development server:
+A local React application for reading the `StoryBook` artifacts produced by ebook structure runs.
 
 ```bash
+cd frontend
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://127.0.0.1:5173. The library automatically reads `../.ebook-runs/*/output/storybook.json`. Use **Open JSON** or drag a file onto the library to open any standalone `storybook.json`. Files selected in the browser stay in the browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The reader follows the recursive `StructureNode.content` model in `diorama/models/storybook.py`. Parts, chapters, and other parent nodes open child-section overviews; text nodes open their `TextContent` fragments. Use the expandable contents tree and clickable breadcrumbs to navigate any depth, or **Read from beginning** to enter a group in source order. Selected parent and text nodes are both saved and supported in run links.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The reader supports section navigation, internal footnote links, saved reading position, font size, serif/sans-serif type, and paper/night themes. It renders sanitized HTML and uses Markdown for plain-text fragments. Available images are served from the run's `output`, `input`, or the original ZIP/EPUB archive. A standalone JSON file does not contain its referenced image files; unavailable images display their alternative text.
 
-## Learn More
+Use another run directory by setting `EBOOK_RUNS_DIR` before starting the server:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+EBOOK_RUNS_DIR=/absolute/path/to/runs npm run dev
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm test
+npm run test:e2e
+npm run build
+npm run preview
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Preview includes the local run API, at http://127.0.0.1:4173. A static deployment of `dist` supports the file picker; automatic run discovery requires the Vite dev or preview server. The server binds to loopback and only exposes book artifacts and image assets within the configured run directory. Reading positions and preferences are stored in this browser. No model calls or changes to ebook runs occur.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Browser tests use installed Google Chrome on macOS. On other systems, run `npx playwright install chromium` first, or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to your Chrome/Chromium executable. Tests launch an isolated browser and their own server on port 5180.
