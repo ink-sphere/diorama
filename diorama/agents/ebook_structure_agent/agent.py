@@ -12,7 +12,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
 
 from tau_agent import AssistantMessage, MessageEndEvent, TurnStartEvent
-from tau_agent.provider import ModelProvider
 from tau_agent.session import JsonlSessionStorage
 from tau_agent.tools import ToolCancellationToken
 from tau_coding import CodingSession, CodingSessionConfig
@@ -20,6 +19,7 @@ from tau_coding.events import CodingSessionEvent
 from tau_coding.paths import TauPaths
 from tau_coding.resources import TauResourcePaths
 
+from diorama.agents.base import BaseDioramaAgent
 from diorama.agents.ebook_structure_agent.prompts import (
     SYSTEM_PROMPT,
     build_extraction_prompt,
@@ -40,12 +40,10 @@ from diorama.models.storybook import StoryBook
 type EventListener = Callable[[CodingSessionEvent], Awaitable[None] | None]
 
 
-class EbookStructureAgent:
-    def __init__(
+class EbookStructureAgent(BaseDioramaAgent[StoryBook]):
+    def configure(
         self,
         *,
-        provider: ModelProvider,
-        model: str,
         max_turns: int = 60,
         max_repair_attempts: int = 2,
         timeout_seconds: float | None = 300,
@@ -56,8 +54,6 @@ class EbookStructureAgent:
         shell_command_prefix: str | None = None,
         source_validator: SourceValidator = validate_source,
     ) -> None:
-        if not model.strip():
-            raise ValueError("model must be non-empty")
         if max_turns < 1 or max_output_bytes < 1 or max_repair_attempts < 0:
             raise ValueError("Invalid execution limits")
         if timeout_seconds is not None and timeout_seconds <= 0:
@@ -69,7 +65,6 @@ class EbookStructureAgent:
             and auto_compact_token_threshold < 1
         ):
             raise ValueError("auto_compact_token_threshold must be positive")
-        self.provider, self.model = provider, model
         self.max_turns = max_turns
         self.max_repair_attempts = max_repair_attempts
         self.timeout_seconds = timeout_seconds
@@ -117,7 +112,6 @@ class EbookStructureAgent:
             encoding="utf-8",
         )
         module = Path(__file__).parent
-        shutil.copytree(module / "skills", workspace / "runtime" / "skills")
         library = reference / "library" / "diorama"
         for relative in ("", "models", "agents", "agents/ebook_structure_agent"):
             directory = library / relative
@@ -180,6 +174,7 @@ class EbookStructureAgent:
                     ),
                     project_resources_enabled=False,
                 ),
+                skills_enabled=False,
                 extensions_enabled=False,
                 project_extensions_enabled=False,
                 trust_override="decline",

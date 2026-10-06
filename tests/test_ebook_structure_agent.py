@@ -29,6 +29,7 @@ from diorama.agents.ebook_structure_agent import (
     parse_ebook,
     validate_plan,
 )
+from diorama.agents.ebook_structure_agent.prompts import SYSTEM_PROMPT
 from diorama.models.storybook import StoryBook, StructureNode, TextContent
 
 
@@ -360,8 +361,12 @@ async def test_coding_session_runs_scripts_with_standard_tools(ebook_path, tmp_p
         "edit",
         "bash",
     }
-    assert "ebook-structure" in provider.calls[0][1]
-    assert "Preserve source text" in provider.calls[0][2][-1].text
+    assert SYSTEM_PROMPT.strip() in provider.calls[0][1]
+    assert "<available_skills>" not in provider.calls[0][1]
+    assert provider.calls[0][2][-1].text.startswith(
+        "Extract this ebook into a StoryBook."
+    )
+    assert "Preserve source text" not in provider.calls[0][2][-1].text
     assert all(
         not message.is_error
         for call in provider.calls
@@ -370,7 +375,7 @@ async def test_coding_session_runs_scripts_with_standard_tools(ebook_path, tmp_p
     )
     workspace = next((tmp_path / "runs").iterdir())
     assert (workspace / "runtime/session.jsonl").is_file()
-    assert (workspace / "runtime/skills/ebook-structure/SKILL.md").is_file()
+    assert not (workspace / "runtime/skills").exists()
     assert (workspace / "reference/storybook_schema.json").is_file()
     assert (workspace / "input/book.epub").read_bytes() == ebook_path.read_bytes()
     assert any(event.type == "agent_settled" for event in events)
@@ -387,6 +392,7 @@ async def test_failed_validation_is_repaired_in_the_same_session(ebook_path):
     result = await EbookStructureAgent(provider=provider, model="fake").run(ebook_path)
     assert result == valid
     assert len(set(provider.session_ids)) == 1
+    assert all(SYSTEM_PROMPT.strip() in call[1] for call in provider.calls)
     messages = provider.calls[2][2]
     assert any(
         getattr(message, "text", "").startswith("Independent validation rejected")
