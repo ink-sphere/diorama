@@ -1,32 +1,32 @@
 import { useEffect, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
-import { isGroup, nodeTitle, type StructureNode } from '../lib/storybook'
+import { type BookNavigation, type StructureEntry } from '../lib/storybook'
 
 interface Props {
-  nodes: StructureNode[]
+  navigation: BookNavigation
   selected: string
   onSelect: (path: string) => void
-  prefix?: string
+  paths?: string[]
 }
 
 function ContentsNode({
-  node,
-  path,
+  entry,
+  navigation,
   selected,
   onSelect,
 }: {
-  node: StructureNode
-  path: string
+  entry: StructureEntry
+  navigation: BookNavigation
   selected: string
   onSelect: (path: string) => void
 }) {
-  const group = isGroup(node)
+  const { node, path, title } = entry
+  const group = entry.children.length > 0
   const within = selected === path || selected.startsWith(`${path}.`)
   const [expanded, setExpanded] = useState(within)
   useEffect(() => {
     if (within) setExpanded(true)
   }, [selected, within])
-  const title = nodeTitle(node)
   return (
     <li>
       <div className={`contents-row ${group && within ? 'contains-current' : ''}`}>
@@ -60,22 +60,26 @@ function ContentsNode({
         </button>
       </div>
       {group && expanded ? (
-        <Contents nodes={node.content} prefix={path} selected={selected} onSelect={onSelect} />
+        <Contents
+          navigation={navigation}
+          paths={entry.children}
+          selected={selected}
+          onSelect={onSelect}
+        />
       ) : null}
     </li>
   )
 }
 
-export function Contents({ nodes, selected, onSelect, prefix = '' }: Props) {
+export function Contents({ navigation, selected, onSelect, paths = navigation.roots }: Props) {
   return (
     <ol className="contents-list">
-      {nodes.map((node, index) => {
-        const path = prefix ? `${prefix}.${index}` : `${index}`
+      {paths.map((path) => {
         return (
           <ContentsNode
             key={path}
-            node={node}
-            path={path}
+            entry={navigation.entries.get(path)!}
+            navigation={navigation}
             selected={selected}
             onSelect={onSelect}
           />

@@ -11,7 +11,13 @@ import {
   Sun,
   X,
 } from 'lucide-react'
-import { ancestors, buildNavigation, isGroup, type StoryBook } from '../lib/storybook'
+import {
+  ancestors,
+  buildNavigation,
+  isGroup,
+  type BookNavigation,
+  type StoryBook,
+} from '../lib/storybook'
 import { renderSection } from '../lib/content'
 import { position, preferences, saveStored } from '../lib/storage'
 import { Contents } from './Contents'
@@ -28,8 +34,38 @@ function scrollRatio(container: HTMLDivElement): number {
   return extent > 1 ? Math.min(1, Math.max(0, container.scrollTop / extent)) : 1
 }
 
-export function Reader({ book, runId, onBack }: Props) {
+export function Reader(props: Props) {
+  const { book, onBack } = props
   const navigation = useMemo(() => buildNavigation(book.structure), [book])
+  if (!navigation.sections.length) {
+    return (
+      <div className="reader theme-paper">
+        <header className="reader-header">
+          <button className="icon-button" onClick={onBack} aria-label="Back to library">
+            <ArrowLeft size={19} />
+          </button>
+          <div className="running-title">
+            <strong>{book.metadata.title}</strong>
+            <span>{book.metadata.authors.join(', ') || 'Unknown author'}</span>
+          </div>
+        </header>
+        <main className="reading-pane">
+          <article className="book-article">
+            <p className="empty-section">This book has no narrative sections to read.</p>
+          </article>
+        </main>
+      </div>
+    )
+  }
+  return <NarrativeReader {...props} navigation={navigation} />
+}
+
+function NarrativeReader({
+  book,
+  runId,
+  onBack,
+  navigation,
+}: Props & { navigation: BookNavigation }) {
   const sections = navigation.sections
   const storageKey = `${book.id}:${runId ?? 'file'}`
   const saved = useMemo(() => position(storageKey), [storageKey])
@@ -282,7 +318,7 @@ export function Reader({ book, runId, onBack }: Props) {
           <p className="sidebar-caption">
             {sections.length} sections · {Math.ceil(totalWords / 220)} min read
           </p>
-          <Contents nodes={book.structure} selected={selected} onSelect={select} />
+          <Contents navigation={navigation} selected={selected} onSelect={select} />
           <div className="sidebar-foot">
             <span className="reading-dot" /> Your place is saved on this device.
           </div>

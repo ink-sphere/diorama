@@ -35,7 +35,13 @@ async function runDirectory(root, id) {
 
 export async function readBook(root, id) {
   const directory = await runDirectory(root, id)
-  const path = await confined(directory, resolve(directory, 'output/storybook.json'))
+  let path
+  try {
+    path = await confined(directory, resolve(directory, 'storybook.json'))
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    path = await confined(directory, resolve(directory, 'output/storybook.json'))
+  }
   const info = await stat(path)
   if (!info.isFile() || info.size > maxBookBytes)
     throw new RunError('This StoryBook is too large to open.')
@@ -44,6 +50,7 @@ export async function readBook(root, id) {
 
 function countSections(nodes) {
   return nodes.reduce((count, node) => {
+    if (node.is_part_of_narrative === false) return count
     const first = node.content?.[0]
     const group = first !== null && typeof first === 'object' && 'structure_type' in first
     return count + (group ? countSections(node.content) : 1)
@@ -124,7 +131,13 @@ export async function readAsset(root, id, reference, cover = false) {
       if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error
     }
   }
-  const input = await confined(directory, resolve(directory, 'input'))
+  let input
+  try {
+    input = await confined(directory, resolve(directory, 'input'))
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    throw new RunError('This image is not included in the ebook run.', 404)
+  }
   const files = await readdir(input, { withFileTypes: true })
   for (const file of files.filter((item) => item.isFile())) {
     const path = await confined(input, resolve(input, file.name))

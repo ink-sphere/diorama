@@ -18,6 +18,7 @@ beforeEach(async () => {
       structure: [
         {
           structure_type: 'chapter',
+          is_part_of_narrative: true,
           content: [{ raw_text: '<p>Text</p>', markdown_text: 'Text' }],
         },
       ],
@@ -29,6 +30,21 @@ afterEach(async () => {
 })
 
 describe('local runs', () => {
+  it('opens artifact-only runs alongside the legacy layout', async () => {
+    const data = await readFile(join(root, 'run-one/output/storybook.json'), 'utf8')
+    await mkdir(join(root, 'run-two'))
+    await writeFile(join(root, 'run-two/storybook.json'), data)
+    expect((await readBook(root, 'run-two')).data).toBe(data)
+    const result = await listRuns(root)
+    expect(result.runs.map((run) => run.runId).sort()).toEqual(['run-one', 'run-two'])
+    expect(result.problems).toEqual([])
+    await expect(readAsset(root, 'run-two', 'cover.png')).rejects.toMatchObject({ status: 404 })
+  })
+  it('does not fall back to a legacy file when the new artifact escapes a run', async () => {
+    await writeFile(join(root, 'outside.json'), '{}')
+    await symlink(join(root, 'outside.json'), join(root, 'run-one/storybook.json'))
+    await expect(readBook(root, 'run-one')).rejects.toThrow('outside')
+  })
   it('lists completed runs and ignores incomplete ones', async () => {
     await mkdir(join(root, 'unfinished'))
     const result = await listRuns(root)
@@ -42,6 +58,28 @@ describe('local runs', () => {
     const result = await listRuns(root)
     expect(result.runs).toEqual([])
     expect(result.problems).toHaveLength(1)
+  })
+  it('counts only narrative sections in the library', async () => {
+    const narrative = {
+      structure_type: 'chapter',
+      is_part_of_narrative: true,
+      content: [{ raw_text: '<p>Text</p>', markdown_text: 'Text' }],
+    }
+    const supplementary = { ...narrative, is_part_of_narrative: false }
+    await writeFile(
+      join(root, 'run-one/output/storybook.json'),
+      JSON.stringify({
+        id: 'book',
+        metadata: { title: 'A book' },
+        structure: [
+          supplementary,
+          { ...supplementary, content: [narrative] },
+          { ...narrative, content: [supplementary, narrative, narrative] },
+          { ...narrative, content: [supplementary] },
+        ],
+      }),
+    )
+    expect((await listRuns(root)).runs[0].sections).toBe(2)
   })
   it('does not follow a StoryBook symlink outside a run', async () => {
     await writeFile(join(root, 'outside.json'), '{}')

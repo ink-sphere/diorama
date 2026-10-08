@@ -110,19 +110,14 @@ describe('hierarchical navigation', () => {
       ],
     })
     const navigation = buildNavigation(source.structure)
-    expect([...navigation.entries.keys()]).toEqual(['0', '0.0', '0.0.0', '0.0.1', '0.1', '1'])
-    expect(navigation.sections.map((section) => section.path)).toEqual([
-      '0.0.0',
-      '0.0.1',
-      '0.1',
-      '1',
-    ])
+    expect([...navigation.entries.keys()]).toEqual(['0', '0.0', '0.0.0', '0.0.1', '0.1'])
+    expect(navigation.sections.map((section) => section.path)).toEqual(['0.0.0', '0.0.1', '0.1'])
     expect(navigation.entries.get('0')?.children).toEqual(['0.0', '0.1'])
     expect(navigation.entries.get('0.0')?.children).toEqual(['0.0.0', '0.0.1'])
     expect(navigation.entries.get('0')?.words).toBe(6)
     expect(navigation.entries.get('0')?.lastSection).toBe(2)
     expect(ancestors(navigation, '0.0.1').map((entry) => entry.path)).toEqual(['0', '0.0'])
-    expect(navigation.entries.get('1')?.node.is_part_of_narrative).toBe(false)
+    expect(navigation.entries.has('1')).toBe(false)
   })
 
   it('allows empty text nodes permitted by the Python model', () => {
@@ -135,5 +130,47 @@ describe('hierarchical navigation', () => {
     expect(navigation.sections[0].words).toBe(0)
     expect(navigation.sections[0].title).toBe('Chapter')
     expect(renderSection(navigation.sections[0], null)).toBe('')
+  })
+
+  it('hides supplementary leaves and branches without renumbering source paths', () => {
+    const supplementary = { ...leaf, is_part_of_narrative: false }
+    const source = parseStoryBook({
+      ...book,
+      structure: [
+        supplementary,
+        { ...supplementary, content: [leaf] },
+        {
+          ...book.structure[0],
+          content: [
+            supplementary,
+            leaf,
+            { ...leaf, content: [supplementary] },
+            { ...leaf, structure_title: 'Chapter two' },
+          ],
+        },
+        supplementary,
+      ],
+    })
+    const original = structuredClone(source)
+    const navigation = buildNavigation(source.structure)
+    expect(navigation.roots).toEqual(['2'])
+    expect([...navigation.entries.keys()]).toEqual(['2', '2.1', '2.3'])
+    expect(navigation.entries.get('2')?.children).toEqual(['2.1', '2.3'])
+    expect(navigation.sections.map((section) => section.path)).toEqual(['2.1', '2.3'])
+    expect(navigation.sections.every((section) => section.narrative)).toBe(true)
+    expect(navigation.entries.get('2')).toMatchObject({ words: 4, firstSection: 0, lastSection: 1 })
+    expect(navigation.sections[1].parents).toEqual(['Part one'])
+    expect(source).toEqual(original)
+  })
+
+  it('returns empty navigation when no narrative leaves remain', () => {
+    const supplementary = { ...leaf, is_part_of_narrative: false }
+    const navigation = buildNavigation([
+      supplementary,
+      { ...leaf, content: [{ ...leaf, content: [supplementary] }] },
+    ])
+    expect(navigation.roots).toEqual([])
+    expect(navigation.sections).toEqual([])
+    expect(navigation.entries.size).toBe(0)
   })
 })

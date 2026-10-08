@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-import re
+import json
 import zipfile
 from collections.abc import Callable, Iterable, Iterator
 from hashlib import sha256
@@ -10,8 +10,9 @@ from pathlib import Path
 
 import html2text
 from bs4 import BeautifulSoup
-from bs4.element import Comment, Doctype, NavigableString, ProcessingInstruction, Tag
 
+from diorama.agents.ebook_structure_agent.hierarchy import validate_hierarchy
+from diorama.agents.ebook_structure_agent.markup import markup_tokens, normalize
 from diorama.agents.ebook_structure_agent.source import (
     EbookStructureError,
     parse_ebook,
@@ -53,52 +54,6 @@ def iter_text_content(nodes: Iterable[StructureNode]) -> Iterator[TextContent]:
                 yield content
 
 
-def _normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _markup_tokens(fragments: Iterable[str]) -> Iterator[tuple]:
-    containers = {
-        "html",
-        "body",
-        "section",
-        "div",
-        "article",
-        "aside",
-        "main",
-        "header",
-        "footer",
-    }
-
-    def visit(element) -> Iterator[tuple]:
-        if isinstance(element, (Comment, Doctype, ProcessingInstruction)):
-            return
-        if isinstance(element, NavigableString):
-            text = _normalize(str(element))
-            if text:
-                yield ("text", text)
-        elif isinstance(element, Tag):
-            name = element.name.rsplit(":", 1)[-1].lower()
-            if name in {"head", "script", "style"}:
-                return
-            if name not in containers:
-                attrs = tuple(
-                    sorted(
-                        (key, tuple(value) if isinstance(value, list) else value)
-                        for key, value in element.attrs.items()
-                    )
-                )
-                yield ("open", name, attrs)
-            for child in element.children:
-                yield from visit(child)
-            if name not in containers:
-                yield ("close", name)
-
-    for fragment in fragments:
-        for element in BeautifulSoup(fragment, "html.parser").contents:
-            yield from visit(element)
-
-
 def _is_epub(archive: zipfile.ZipFile) -> bool:
     names = archive.namelist()
     return "META-INF/container.xml" in names or (
@@ -114,13 +69,41 @@ def _validate_metadata(book: StoryBook, metadata: EbookMetadata) -> None:
             raise ValueError(f"Source metadata changed: {field}")
 
 
-def _validate_markup(expected: Iterable[str], actual: Iterable[str]) -> None:
+def _located_tokens(
+    fragments: Iterable[str], locations: Iterable[str] | None = None
+) -> Iterator[tuple[tuple, str]]:
+    labels = iter(locations) if locations is not None else None
+    for index, fragment in enumerate(fragments, 1):
+        label = next(labels) if labels is not None else f"text fragment {index}"
+        for token in markup_tokens([fragment]):
+            yield token, label
+
+
+def _describe_token(item: tuple[tuple, str] | None) -> str:
+    if item is None:
+        return "end of content"
+    token, location = item
+    return f"{location}: {json.dumps(token, ensure_ascii=False)[:1500]}"
+
+
+def _validate_markup(
+    expected: Iterable[str],
+    actual: Iterable[str],
+    *,
+    source_locations: Iterable[str] | None = None,
+    description: str = "Source content changed, duplicated, omitted, or reordered",
+) -> None:
     for index, (left, right) in enumerate(
-        zip_longest(_markup_tokens(expected), _markup_tokens(actual))
+        zip_longest(
+            _located_tokens(expected, source_locations), _located_tokens(actual)
+        )
     ):
-        if left != right:
+        if left is None or right is None or left[0] != right[0]:
             raise ValueError(
-                f"Source content changed, duplicated, omitted, or reordered at token {index}"
+                f"{description} at token {index}. "
+                f"Expected {_describe_token(left)}; actual {_describe_token(right)}. "
+                "Compare this source location with the corresponding output fragment; "
+                "preserve its text, markup, meaningful attributes, and reading order."
             )
 
 
@@ -137,12 +120,33 @@ def validate_source(book: StoryBook, data: bytes, filename: str) -> None:
                 _validate_markup(
                     (block.raw_text for block in source.blocks),
                     (item.raw_text for item in content),
+                    source_locations=(
+                        f"{block.href} (block {block.id})" for block in source.blocks
+                    ),
+                )
+                validate_hierarchy(
+                    book,
+                    ((block.raw_text, block.href, block.id) for block in source.blocks),
+                    toc=source.toc,
                 )
                 return
             if {"manifest.json", "book.json"}.issubset(archive.namelist()):
                 metadata, fragments = parse_json_book_export(archive, filename=filename)
                 _validate_metadata(book, metadata)
-                _validate_markup(fragments, (item.raw_text for item in content))
+                _validate_markup(
+                    fragments,
+                    (item.raw_text for item in content),
+                    source_locations=(
+                        f"book.json chapter {index}" for index in range(len(fragments))
+                    ),
+                )
+                validate_hierarchy(
+                    book,
+                    (
+                        (fragment, str(index), None)
+                        for index, fragment in enumerate(fragments)
+                    ),
+                )
                 return
     if Path(filename).suffix.lower() == ".epub":
         raise ValueError(
@@ -152,13 +156,16 @@ def validate_source(book: StoryBook, data: bytes, filename: str) -> None:
         actual = " ".join(
             BeautifulSoup(item.raw_text, "html.parser").get_text() for item in content
         )
-        if _normalize(actual) != _normalize(data.decode("utf-8-sig")):
+        if normalize(actual) != normalize(data.decode("utf-8-sig")):
             raise ValueError("Source text changed, duplicated, omitted, or reordered")
     elif Path(filename).suffix.lower() in {".html", ".htm", ".xhtml"}:
-        expected = _markup_tokens([data.decode("utf-8-sig")])
-        actual = _markup_tokens(item.raw_text for item in content)
-        if any(left != right for left, right in zip_longest(expected, actual)):
-            raise ValueError("Source markup changed, duplicated, omitted, or reordered")
+        _validate_markup(
+            [data.decode("utf-8-sig")],
+            (item.raw_text for item in content),
+            source_locations=[filename],
+            description="Source markup changed, duplicated, omitted, or reordered",
+        )
+        validate_hierarchy(book, [(data.decode("utf-8-sig"), filename, None)])
 
 
 def load_storybook(
@@ -184,7 +191,7 @@ def load_storybook(
     converter.body_width = 0
     for content in iter_text_content(book.structure):
         expected = converter.handle(content.raw_text).strip()
-        if _normalize(content.markdown_text) != _normalize(expected):
+        if normalize(content.markdown_text) != normalize(expected):
             raise ValueError(
                 "Markdown content does not match its source fragment; use html2text with body_width=0"
             )

@@ -6,7 +6,7 @@
 - `diorama/models/storybook.py` defines the Pydantic book and recursive structure models.
 - `tests/` contains Python tests; `scripts/process_ebook.py` runs extraction.
 - `frontend/` is the React/TypeScript reader: `src/` holds components and utilities, `server/runs.mjs` exposes local run files, `tests/` contains unit tests, and `e2e/` contains browser tests. Fonts are bundled through Fontsource.
-- `books/` and `.ebook-runs/` are ignored local data. Completed runs contain `output/storybook.json`.
+- `books/` and `.ebook-runs/` are ignored local data. Completed runs contain only `<run-id>/storybook.json`.
 
 ## Build, Test, and Development Commands
 
@@ -40,7 +40,7 @@ Python uses four-space indentation, double quotes, type annotations, and Ruff fo
 
 ## Architecture & Testing Guidelines
 
-New agents inherit `BaseDioramaAgent[OutputT]`, implement `configure()`, and expose typed asynchronous `run()` methods. Keep domain rules in concrete agents. Match frontend types and hierarchy navigation to the Python models.
+New agents inherit `BaseDioramaAgent[OutputT]`, implement `configure()`, and expose typed asynchronous `run()` methods. Use shared `working_directory()` for temporary files and `await save_output()` for finished artifacts. Resolve caller paths without changing the process directory or depending on a checkout. Keep domain rules in concrete agents. Match frontend types and hierarchy navigation to the Python models.
 
 Use pytest/pytest-asyncio with `test_*.py`, Vitest with `*.test.ts`, and Playwright with `*.spec.ts`. Prefer fake providers and synthetic books for automated tests. Cover validation, content order, cancellation, hierarchy, and file confinement with focused regressions. No coverage percentage is configured.
 

@@ -1,3 +1,10 @@
-from .base import BaseDioramaAgent
+from .base import AgentCallback, AgentTraceEvent, BaseDioramaAgent, RunEvent
+from .rich_trace import RichTraceCallback
 
-__all__ = ["BaseDioramaAgent"]
+__all__ = [
+    "AgentCallback",
+    "AgentTraceEvent",
+    "BaseDioramaAgent",
+    "RichTraceCallback",
+    "RunEvent",
+]

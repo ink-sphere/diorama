@@ -6,12 +6,15 @@ import shlex
 import sys
 from hashlib import sha256
 from html import escape
+from io import StringIO
 from pathlib import Path
 
 import html2text
 import pytest
+from bs4 import BeautifulSoup
 from ebooklib import epub
 from pydantic import ValidationError
+from rich.console import Console
 from tau_agent import (
     AssistantMessage,
     SimpleCancellationToken,
@@ -20,6 +23,7 @@ from tau_agent import (
 )
 from tau_ai import AssistantDoneEvent, AssistantErrorEvent, FakeProvider
 
+from diorama.agents import RichTraceCallback
 from diorama.agents.ebook_structure_agent import (
     EbookStructureAgent,
     EbookStructureError,
@@ -102,7 +106,24 @@ def leaf(first: str, last: str, title: str = "", narrative: bool = True) -> dict
 
 
 def complete_plan(source) -> dict:
-    return {"nodes": [leaf(source.blocks[0].id, source.blocks[-1].id, "Chapter One")]}
+    return {
+        "nodes": [
+            leaf(
+                source.blocks[document.start].id,
+                source.blocks[document.stop - 1].id,
+                next(
+                    (
+                        block.text
+                        for block in source.blocks[document.start : document.stop]
+                        if block.heading_level
+                    ),
+                    "",
+                ),
+            )
+            for document in source.documents
+            if document.start < document.stop
+        ]
+    }
 
 
 def call_stream(name: str, arguments: dict, call_id: str = "call") -> list:
@@ -281,7 +302,8 @@ def test_materializer_preserves_all_content_in_nested_cross_document_nodes(ebook
     ]
     assert book.metadata == source.metadata
     assert book.metadata is not source.metadata
-    assert len(book.structure[0].content[1].content) == 3
+    assert len(book.structure[0].content) == 1
+    assert len(book.structure[0].content[0].content) == 4
 
 
 def done_stream() -> list:
@@ -325,34 +347,34 @@ def artifact_stream(book: StoryBook) -> list:
 
 @pytest.mark.asyncio
 async def test_coding_session_runs_scripts_with_standard_tools(ebook_path, tmp_path):
-    source = parse_ebook(ebook_path)
-    command = (
-        f"{shlex.quote(sys.executable)} reference/ebook_tools.py "
-        "build input/book.epub --plan work/structure.json --output output/storybook.json"
+    expected = ebook_artifact(ebook_path)
+    script = (
+        "import hashlib, json\nfrom pathlib import Path\n"
+        f"book = json.loads({expected.model_dump_json()!r})\n"
+        "assert book['id'] == hashlib.sha256(Path('input/book.epub').read_bytes()).hexdigest()\n"
+        "Path('output/storybook.json').write_text(json.dumps(book))\n"
     )
     provider = FakeProvider(
         [
-            call_stream("read", {"path": "reference/storybook_schema.json"}),
+            call_stream("write", {"path": "work/extract.py", "content": script}),
+            call_stream("read", {"path": "work/extract.py"}),
             call_stream(
-                "write",
-                {
-                    "path": "work/structure.json",
-                    "content": json.dumps(complete_plan(source)),
-                },
-            ),
-            call_stream("bash", {"command": command}),
-            call_stream(
-                "bash",
-                {
-                    "command": f"{shlex.quote(sys.executable)} reference/ebook_tools.py validate input/book.epub --book output/storybook.json"
-                },
+                "bash", {"command": f"{shlex.quote(sys.executable)} work/extract.py"}
             ),
             done_stream(),
         ]
     )
     events = []
+    traces = []
+    terminal = StringIO()
     book = await EbookStructureAgent(
-        provider=provider, model="fake", workspace_root=tmp_path / "runs"
+        provider=provider,
+        model="fake",
+        workspace_root=tmp_path / "runs",
+        callbacks=[
+            traces.append,
+            RichTraceCallback(console=Console(file=terminal, width=100)),
+        ],
     ).run(ebook_path, on_event=events.append)
     assert book == ebook_artifact(ebook_path)
     assert {tool.name for tool in provider.calls[0][3]} == {
@@ -373,12 +395,29 @@ async def test_coding_session_runs_scripts_with_standard_tools(ebook_path, tmp_p
         for message in call[2]
         if isinstance(message, ToolResultMessage)
     )
-    workspace = next((tmp_path / "runs").iterdir())
-    assert (workspace / "runtime/session.jsonl").is_file()
-    assert not (workspace / "runtime/skills").exists()
-    assert (workspace / "reference/storybook_schema.json").is_file()
-    assert (workspace / "input/book.epub").read_bytes() == ebook_path.read_bytes()
+    saved = next((tmp_path / "runs").iterdir())
+    assert [item.name for item in saved.iterdir()] == ["storybook.json"]
+    assert (
+        StoryBook.model_validate_json((saved / "storybook.json").read_bytes()) == book
+    )
+    workspace = Path(
+        next(
+            trace.event.details["path"]
+            for trace in traces
+            if trace.event.type == "workspace_ready"
+        )
+    )
+    assert not workspace.exists()
     assert any(event.type == "agent_settled" for event in events)
+    assert [
+        trace.event
+        for trace in traces
+        if not trace.event.type.startswith(("run_", "workspace_", "output_"))
+    ] == events
+    assert traces[0].event.type == "run_start"
+    assert traces[-1].event.type == "run_end"
+    assert "Run End" in terminal.getvalue()
+    assert "bash: OK" in terminal.getvalue()
 
 
 @pytest.mark.asyncio
@@ -389,8 +428,14 @@ async def test_failed_validation_is_repaired_in_the_same_session(ebook_path):
     provider = FakeProvider(
         [artifact_stream(invalid), done_stream(), artifact_stream(valid), done_stream()]
     )
-    result = await EbookStructureAgent(provider=provider, model="fake").run(ebook_path)
+    traces = []
+    result = await EbookStructureAgent(
+        provider=provider, model="fake", callbacks=[traces.append]
+    ).run(ebook_path)
     assert result == valid
+    assert any(trace.event.type == "validation_failed" for trace in traces)
+    assert sum(trace.event.type == "run_start" for trace in traces) == 1
+    assert traces[-1].event.type == "run_end"
     assert len(set(provider.session_ids)) == 1
     assert all(SYSTEM_PROMPT.strip() in call[1] for call in provider.calls)
     messages = provider.calls[2][2]
@@ -407,20 +452,18 @@ async def test_generic_text_needs_no_epub_tools(tmp_path):
     data = b"Chapter One\n\nA < B & C > D.\n\nChapter Two\nThe end."
     path.write_bytes(data)
     book = text_artifact(data)
-    script = """import hashlib, html, sys
+    script = """import hashlib, html, json
 from pathlib import Path
 import html2text
-sys.path.insert(0, 'reference/library')
-from diorama.models.storybook import StoryBook, StructureNode, TextContent
 data = Path('input/book.txt').read_bytes()
 raw = html.escape(data.decode())
 converter = html2text.HTML2Text()
 converter.body_width = 0
-book = StoryBook(id=hashlib.sha256(data).hexdigest(), metadata={'title': 'A Book'},
-    structure=[StructureNode(structure_type='chapter', structure_title='',
-        is_part_of_narrative=True, content=[TextContent(raw_text=raw,
-            markdown_text=converter.handle(raw).strip())])])
-Path('output/storybook.json').write_text(book.model_dump_json())
+book = {'id': hashlib.sha256(data).hexdigest(), 'metadata': {'title': 'A Book'},
+    'structure': [{'structure_type': 'chapter', 'structure_title': '',
+        'is_part_of_narrative': True, 'content': [{'raw_text': raw,
+            'markdown_text': converter.handle(raw).strip()}]}]}
+Path('output/storybook.json').write_text(json.dumps(book))
 """
     provider = FakeProvider(
         [
@@ -454,7 +497,7 @@ async def test_custom_source_validator_receives_original_bytes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_local_helper_edits_cannot_disable_host_validation(ebook_path):
+async def test_local_validator_cannot_disable_host_validation(ebook_path):
     book = ebook_artifact(ebook_path)
     book.structure[0].content.pop()
     provider = FakeProvider(
@@ -462,7 +505,7 @@ async def test_local_helper_edits_cannot_disable_host_validation(ebook_path):
             call_stream(
                 "write",
                 {
-                    "path": "reference/library/diorama/agents/ebook_structure_agent/validation.py",
+                    "path": "work/validation.py",
                     "content": "def load_storybook(*args, **kwargs): return None",
                 },
             ),
@@ -660,7 +703,7 @@ async def test_output_symlink_outside_workspace_is_rejected(ebook_path, tmp_path
         ("metadata", "Source metadata changed"),
         ("id", "SHA-256"),
         ("markdown", "Markdown content"),
-        ("empty", "non-empty content"),
+        ("empty", "Source content changed"),
         ("extra", "Extra inputs"),
     ],
 )
@@ -798,9 +841,30 @@ def json_export(tmp_path):
     book.metadata.title = "A Test Book"
     book.metadata.authors = ["Test Author"]
     book.metadata.language = "en"
-    book.structure[0].content = [
-        text_artifact(b"", fragment).structure[0].content[0] for fragment in fragments
-    ]
+    book.structure = []
+    for fragment in fragments:
+        soup = BeautifulSoup(fragment, "html.parser")
+        heading = soup.find("h1")
+        title = heading.get_text()
+        raw_heading = str(heading.extract())
+        converter = html2text.HTML2Text()
+        converter.body_width = 0
+        node = StructureNode(
+            structure_type="chapter",
+            structure_title=title,
+            is_part_of_narrative=True,
+            content=[
+                TextContent(
+                    raw_text=raw_heading,
+                    markdown_text=converter.handle(raw_heading).strip(),
+                ),
+                TextContent(
+                    raw_text=str(soup),
+                    markdown_text=converter.handle(str(soup)).strip(),
+                ),
+            ],
+        )
+        book.structure.append(node)
     return path, book
 
 
@@ -825,13 +889,13 @@ def test_json_zip_export_requires_exact_ordered_content(json_export, tmp_path, c
     elif change == "reorder":
         content.reverse()
     else:
-        raw = content[0].raw_text
+        raw = content[1].raw_text
         raw = (
             raw.replace("First", "Rewritten")
             if change == "rewrite"
             else raw.replace("<em>", "").replace("</em>", "")
         )
-        content[0] = text_artifact(b"", raw).structure[0].content[0]
+        content[1] = text_artifact(b"", raw).structure[0].content[0]
     output = tmp_path / "storybook.json"
     output.write_text(book.model_dump_json())
     with pytest.raises(ValueError, match="Source content changed"):
@@ -944,3 +1008,68 @@ def test_json_export_uses_book_and_manifest_metadata_fallbacks(
     output = tmp_path / "storybook.json"
     output.write_text(book.model_dump_json())
     assert load_storybook(output, path.read_bytes(), path.name) == book
+
+
+async def test_ebook_runs_from_arbitrary_directory_and_keeps_only_artifacts(
+    tmp_path, monkeypatch
+):
+    caller = tmp_path / "application with spaces"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+    path = Path("my book.txt")
+    data = b"A story from another directory."
+    path.write_bytes(data)
+    expected = text_artifact(data)
+    traces = []
+    provider = FakeProvider(
+        [
+            artifact_stream(expected),
+            done_stream(),
+            artifact_stream(expected),
+            done_stream(),
+        ]
+    )
+    agent = EbookStructureAgent(
+        provider=provider,
+        model="fake",
+        workspace_root=".ebook-runs",
+        callbacks=[traces.append],
+    )
+    assert await agent.run(path) == expected
+    assert await agent.run(path) == expected
+    assert Path.cwd() == caller
+    root = caller / ".ebook-runs"
+    runs = list(root.iterdir())
+    assert len(runs) == 2
+    for run in runs:
+        assert [file.name for file in run.iterdir()] == ["storybook.json"]
+        assert (
+            StoryBook.model_validate_json((run / "storybook.json").read_bytes())
+            == expected
+        )
+    for trace in traces:
+        if trace.event.type == "workspace_ready":
+            workspace = Path(trace.event.details["path"])
+            assert not workspace.is_relative_to(root)
+            assert not workspace.exists()
+    assert "StoryBook JSON schema:" in provider.calls[0][1]
+    assert "reference/ebook_tools.py" not in provider.calls[0][1]
+    assert path.read_bytes() == data
+
+
+async def test_invalid_ebook_run_persists_nothing(tmp_path):
+    path = tmp_path / "book.txt"
+    path.write_text("Original content")
+    root = tmp_path / "runs"
+    invalid = text_artifact(path.read_bytes())
+    invalid.structure[0].content[0].raw_text = "Changed content"
+    invalid.structure[0].content[0].markdown_text = "Changed content"
+    agent = EbookStructureAgent(
+        provider=FakeProvider([artifact_stream(invalid), done_stream()]),
+        model="fake",
+        workspace_root=root,
+        max_repair_attempts=0,
+    )
+    with pytest.raises(EbookStructureError, match="Source text changed"):
+        await agent.run(path)
+    assert not root.exists()

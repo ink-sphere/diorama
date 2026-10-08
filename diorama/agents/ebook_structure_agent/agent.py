@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import shutil
 import sys
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
-from contextlib import contextmanager, suppress
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import suppress
 from hashlib import sha256
-from inspect import getfile, isawaitable
+from inspect import isawaitable
 from pathlib import Path
-from tempfile import TemporaryDirectory, mkdtemp
 
 from tau_agent import AssistantMessage, MessageEndEvent, TurnStartEvent
 from tau_agent.session import JsonlSessionStorage
@@ -19,15 +16,14 @@ from tau_coding.events import CodingSessionEvent
 from tau_coding.paths import TauPaths
 from tau_coding.resources import TauResourcePaths
 
-from diorama.agents.base import BaseDioramaAgent
+from diorama.agents.base import BaseDioramaAgent, RunEvent
 from diorama.agents.ebook_structure_agent.prompts import (
-    SYSTEM_PROMPT,
     build_extraction_prompt,
     build_repair_prompt,
+    build_system_prompt,
 )
 from diorama.agents.ebook_structure_agent.source import (
     EbookStructureError,
-    StructurePlan,
 )
 from diorama.agents.ebook_structure_agent.tools import create_ebook_coding_tools
 from diorama.agents.ebook_structure_agent.validation import (
@@ -50,7 +46,6 @@ class EbookStructureAgent(BaseDioramaAgent[StoryBook]):
         max_context_characters: int | None = None,
         max_output_bytes: int = 128 * 1024 * 1024,
         auto_compact_token_threshold: int | None = None,
-        workspace_root: str | Path | None = None,
         shell_command_prefix: str | None = None,
         source_validator: SourceValidator = validate_source,
     ) -> None:
@@ -71,66 +66,15 @@ class EbookStructureAgent(BaseDioramaAgent[StoryBook]):
         self.max_context_characters = max_context_characters
         self.max_output_bytes = max_output_bytes
         self.auto_compact_token_threshold = auto_compact_token_threshold
-        self.workspace_root = (
-            Path(workspace_root) if workspace_root is not None else None
-        )
         self.shell_command_prefix = shell_command_prefix
         self.source_validator = source_validator
 
-    @contextmanager
-    def _workspace(self) -> Iterator[Path]:
-        if self.workspace_root is not None:
-            self.workspace_root.mkdir(parents=True, exist_ok=True)
-            yield Path(mkdtemp(prefix="ebook-", dir=self.workspace_root)).resolve()
-        else:
-            with TemporaryDirectory(prefix="diorama-ebook-") as directory:
-                yield Path(directory).resolve()
-
     @staticmethod
     def _prepare_workspace(workspace: Path, data: bytes, filename: str) -> Path:
-        for directory in ("input", "work", "output", "reference", "runtime"):
+        for directory in ("input", "work", "output", "runtime"):
             (workspace / directory).mkdir()
         input_path = workspace / "input" / filename
         input_path.write_bytes(data)
-        reference = workspace / "reference"
-        reference.joinpath("storybook_schema.json").write_text(
-            json.dumps(StoryBook.model_json_schema(), indent=2), encoding="utf-8"
-        )
-        reference.joinpath("structure_plan_schema.json").write_text(
-            json.dumps(StructurePlan.model_json_schema(), indent=2), encoding="utf-8"
-        )
-        reference.joinpath("task.json").write_text(
-            json.dumps(
-                {
-                    "input_path": input_path.relative_to(workspace).as_posix(),
-                    "source_id": sha256(data).hexdigest(),
-                    "python": sys.executable,
-                    "source_validation": "EPUB and JSON book ZIP exports are detected from archive contents and compared independently, as are UTF-8 text and HTML; other formats require a source validator for content checks.",
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        module = Path(__file__).parent
-        library = reference / "library" / "diorama"
-        for relative in ("", "models", "agents", "agents/ebook_structure_agent"):
-            directory = library / relative
-            directory.mkdir(parents=True, exist_ok=True)
-            directory.joinpath("__init__.py").touch()
-        shutil.copyfile(
-            getfile(StoryBook),
-            library / "models" / "storybook.py",
-        )
-        for name in ("source.py", "validation.py", "cli.py"):
-            shutil.copyfile(
-                module / name, library / "agents" / "ebook_structure_agent" / name
-            )
-        reference.joinpath("ebook_tools.py").write_text(
-            "import sys\nfrom pathlib import Path\n"
-            "sys.path.insert(0, str(Path(__file__).parent / 'library'))\n"
-            "from diorama.agents.ebook_structure_agent.cli import main\nmain()\n",
-            encoding="utf-8",
-        )
         return input_path
 
     @staticmethod
@@ -160,7 +104,7 @@ class EbookStructureAgent(BaseDioramaAgent[StoryBook]):
                 model=self.model,
                 storage=JsonlSessionStorage(workspace / "runtime" / "session.jsonl"),
                 cwd=workspace,
-                append_system_prompt=SYSTEM_PROMPT,
+                append_system_prompt=build_system_prompt(),
                 tools=create_ebook_coding_tools(
                     workspace, shell_command_prefix=self.shell_command_prefix
                 ),
@@ -193,6 +137,7 @@ class EbookStructureAgent(BaseDioramaAgent[StoryBook]):
                 try:
                     async for event in stream:
                         self._check_cancel(signal)
+                        await self.emit_event(event)
                         if isinstance(event, TurnStartEvent):
                             turns += 1
                             if turns > self.max_turns:
@@ -240,6 +185,12 @@ class EbookStructureAgent(BaseDioramaAgent[StoryBook]):
                         max_output_bytes=self.max_output_bytes,
                     )
                 except (ValueError, OSError) as exc:
+                    await self.emit_event(
+                        RunEvent(
+                            "validation_failed",
+                            {"attempt": attempt + 1, "error": str(exc)},
+                        )
+                    )
                     if attempt == self.max_repair_attempts:
                         raise EbookStructureError(
                             f"StoryBook validation failed: {exc}"
@@ -258,7 +209,7 @@ class EbookStructureAgent(BaseDioramaAgent[StoryBook]):
         signal: ToolCancellationToken | None = None,
     ) -> StoryBook:
         self._check_cancel(signal)
-        path = Path(ebook_path)
+        path = Path(ebook_path).expanduser().resolve()
         data = await asyncio.to_thread(path.read_bytes)
         self._check_cancel(signal)
         monitor = None
@@ -267,7 +218,7 @@ class EbookStructureAgent(BaseDioramaAgent[StoryBook]):
             monitor = asyncio.create_task(self._watch_cancellation(signal, task))
         try:
             async with asyncio.timeout(self.timeout_seconds):
-                with self._workspace() as workspace:
+                with self.working_directory() as workspace:
                     preparation = asyncio.create_task(
                         asyncio.to_thread(
                             self._prepare_workspace, workspace, data, path.name
@@ -279,9 +230,20 @@ class EbookStructureAgent(BaseDioramaAgent[StoryBook]):
                         with suppress(Exception):
                             await preparation
                         raise
-                    return await self._run_session(
+                    await self.emit_event(
+                        RunEvent("workspace_ready", {"path": str(workspace)})
+                    )
+                    storybook = await self._run_session(
                         workspace, input_path, data, on_event=on_event, signal=signal
                     )
+                    self._check_cancel(signal)
+                    if self.workspace_root is not None:
+                        serialized = await asyncio.to_thread(
+                            storybook.model_dump_json, indent=2
+                        )
+                        self._check_cancel(signal)
+                        await self.save_output("storybook.json", serialized)
+                    return storybook
         except TimeoutError as exc:
             raise EbookStructureError("Structure extraction timed out") from exc
         finally:

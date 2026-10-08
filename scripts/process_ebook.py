@@ -11,6 +11,7 @@ from tau_coding.oauth import login_openai_codex
 from tau_coding.oauth_types import OAuthPrompt
 from tau_coding.provider_runtime import create_model_provider
 
+from diorama.agents import RichTraceCallback
 from diorama.agents.ebook_structure_agent import EbookStructureAgent
 
 
@@ -29,7 +30,7 @@ async def ensure_login() -> FileCredentialStore:
     return store
 
 
-async def main(ebook_path: Path, model: str | None) -> None:
+async def main(ebook_path: Path, model: str | None, *, trace: bool = True) -> None:
     credentials = await ensure_login()
     selection = resolve_provider_selection(
         load_provider_settings(), provider_name="openai-codex", model=model
@@ -42,6 +43,7 @@ async def main(ebook_path: Path, model: str | None) -> None:
             provider=provider,
             model=selection.model,
             workspace_root=".ebook-runs",
+            callbacks=[RichTraceCallback()] if trace else [],
         )
         storybook = await agent.run(ebook_path)
         print(f"Extracted {storybook.metadata.title} ({storybook.id})")
@@ -53,5 +55,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("ebook", type=Path, nargs="?", default=Path("book.epub"))
     parser.add_argument("--model", help="Override Tau's configured Codex model")
+    parser.add_argument(
+        "--no-trace", action="store_true", help="Disable terminal agent traces"
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.ebook, args.model))
+    asyncio.run(main(args.ebook, args.model, trace=not args.no_trace))

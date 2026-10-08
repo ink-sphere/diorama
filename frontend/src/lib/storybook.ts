@@ -140,7 +140,9 @@ export function buildNavigation(nodes: StructureNode[]): BookNavigation {
   const entries = new Map<string, StructureEntry>()
   const sections: Section[] = []
   function visit(items: StructureNode[], parentPath: string | null, parents: string[]): string[] {
-    return items.map((node, index) => {
+    const paths: string[] = []
+    items.forEach((node, index) => {
+      if (!node.is_part_of_narrative) return
       const path = parentPath === null ? `${index}` : `${parentPath}.${index}`
       const entry: StructureEntry = {
         path,
@@ -155,6 +157,10 @@ export function buildNavigation(nodes: StructureNode[]): BookNavigation {
       entries.set(path, entry)
       if (isGroup(node)) {
         entry.children = visit(node.content, path, [...parents, entry.title])
+        if (!entry.children.length) {
+          entries.delete(path)
+          return
+        }
         entry.words = entry.children.reduce((sum, child) => sum + entries.get(child)!.words, 0)
       } else {
         const content = node.content as TextContent[]
@@ -174,8 +180,9 @@ export function buildNavigation(nodes: StructureNode[]): BookNavigation {
         })
       }
       entry.lastSection = sections.length - 1
-      return path
+      paths.push(path)
     })
+    return paths
   }
   const roots = visit(nodes, null, [])
   return { entries, roots, sections }

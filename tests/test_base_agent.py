@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -82,3 +83,99 @@ def test_ebook_agent_implements_the_shared_api():
     assert agent.max_repair_attempts == 1
     with pytest.raises(TypeError):
         EbookStructureAgent(provider=provider, model="fake", unknown_option=True)
+
+
+async def test_shared_workspace_lifecycle_and_output_are_independent_of_checkout(
+    tmp_path, monkeypatch
+):
+    class FileAgent(EchoAgent):
+        async def run(self, text: str, *, suffix: str = "") -> str:
+            with self.working_directory() as directory:
+                self.scratch = directory
+                (directory / "intermediate.txt").write_text(text)
+                self.saved = await self.save_output("result.txt", text + suffix)
+            return text + suffix
+
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+    agent = FileAgent(provider=FakeProvider([]), model="fake", workspace_root="runs")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert await agent.run("content", suffix="!") == "content!"
+    assert Path.cwd() == elsewhere
+    assert agent.workspace_root == caller / "runs"
+    assert not agent.scratch.exists()
+    assert agent.saved is not None
+    assert agent.saved.read_text() == "content!"
+    assert list((caller / "runs").glob("*/*")) == [agent.saved]
+    assert not (elsewhere / "runs").exists()
+
+
+async def test_base_does_not_create_persistent_output_by_default(tmp_path):
+    class FileAgent(EchoAgent):
+        async def run(self, text: str, *, suffix: str = "") -> str:
+            assert await self.save_output("result.txt", text) is None
+            return text
+
+    agent = FileAgent(provider=FakeProvider([]), model="fake")
+    assert await agent.run("content") == "content"
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "",
+        ".",
+        "..",
+        "../outside.txt",
+        "/outside.txt",
+        "folder/output.txt",
+        "..\\outside.txt",
+    ],
+)
+async def test_shared_output_rejects_paths(filename, tmp_path):
+    class FileAgent(EchoAgent):
+        async def run(self, text: str, *, suffix: str = "") -> str:
+            await self.save_output(filename, text)
+            return text
+
+    agent = FileAgent(
+        provider=FakeProvider([]), model="fake", workspace_root=tmp_path / "runs"
+    )
+    with pytest.raises(ValueError, match="single path component"):
+        await agent.run("content")
+    assert not (tmp_path / "runs").exists()
+
+
+async def test_cancelled_publication_waits_and_removes_its_artifact(tmp_path):
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class FileAgent(EchoAgent):
+        def _publish_output(self, destination, filename, content):
+            started.set()
+            release.wait(timeout=2)
+            return super()._publish_output(destination, filename, content)
+
+        async def run(self, text: str, *, suffix: str = "") -> str:
+            await self.save_output("result.txt", text)
+            return text
+
+    root = tmp_path / "runs"
+    agent = FileAgent(provider=FakeProvider([]), model="fake", workspace_root=root)
+    task = asyncio.create_task(agent.run("content"))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert not root.exists() or list(root.iterdir()) == []
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()

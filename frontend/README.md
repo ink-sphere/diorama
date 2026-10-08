@@ -8,11 +8,13 @@ npm install
 npm run dev
 ```
 
-Open http://127.0.0.1:5173. The library automatically reads `../.ebook-runs/*/output/storybook.json`. Use **Open JSON** or drag a file onto the library to open any standalone `storybook.json`. Files selected in the browser stay in the browser.
+Open http://127.0.0.1:5173. The library automatically reads `../.ebook-runs/*/storybook.json` and also supports the older `*/output/storybook.json` layout. Use **Open JSON** or drag a file onto the library to open any standalone `storybook.json`. Files selected in the browser stay in the browser.
 
 The reader follows the recursive `StructureNode.content` model in `diorama/models/storybook.py`. Parts, chapters, and other parent nodes open child-section overviews; text nodes open their `TextContent` fragments. Use the expandable contents tree and clickable breadcrumbs to navigate any depth, or **Read from beginning** to enter a group in source order. Selected parent and text nodes are both saved and supported in run links.
 
-The reader supports section navigation, internal footnote links, saved reading position, font size, serif/sans-serif type, and paper/night themes. It renders sanitized HTML and uses Markdown for plain-text fragments. Available images are served from the run's `output`, `input`, or the original ZIP/EPUB archive. A standalone JSON file does not contain its referenced image files; unavailable images display their alternative text.
+Nodes with `is_part_of_narrative: false` and their descendants are hidden from the contents, overviews, and reading navigation. Section counts and progress include only visible narrative sections. Original node paths remain stable; saved positions or links to hidden nodes fall back to the first narrative section. Books without narrative sections show an empty state.
+
+The reader supports section navigation, internal footnote links, saved reading position, font size, serif/sans-serif type, and paper/night themes. It renders sanitized HTML and uses Markdown for plain-text fragments. New runs contain only `storybook.json`; external image files are not retained. Older runs can serve available images from `output`, `input`, or their original ZIP/EPUB archive. Unavailable images display their alternative text.
 
 Use another run directory by setting `EBOOK_RUNS_DIR` before starting the server:
 
