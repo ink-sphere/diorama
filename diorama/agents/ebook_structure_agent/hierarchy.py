@@ -13,13 +13,8 @@ from bs4.element import Tag
 
 from diorama.agents.ebook_structure_agent.markup import markup_tokens
 from diorama.agents.ebook_structure_agent.source import TocEntry
-from diorama.models.storybook import (
-    _BODY_MEDIA,
-    StoryBook,
-    StructureNode,
-    TextContent,
-    _has_text,
-)
+from diorama.models.storybook import StoryBook, StructureNode, TextContent
+from diorama.utils.structure_node_utils import _BODY_MEDIA, has_text as _has_text
 
 _NUMBERED_SECTION = re.compile(
     r"^(act|scene|part|book|chapter|section)\s+"
