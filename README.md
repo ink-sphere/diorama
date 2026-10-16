@@ -66,6 +66,62 @@ uv run python scripts/process_ebook.py books/example.epub
 uv run python scripts/process_ebook.py books/example.epub --no-trace
 ```
 
+Profile characters from the resulting StoryBook with the same Codex login,
+optional `--model` override, and a Rich progress bar. The bar counts completed
+narrative leaf nodes in reading order, shows the current section, and reports
+final reconciliation and saving. Detailed traces are disabled by default; enable
+them with `--trace`:
+
+```bash
+uv run python scripts/profile_characters.py .ebook-runs/<run-id>
+uv run python scripts/profile_characters.py .ebook-runs/<run-id> --trace
+uv run python scripts/profile_characters.py .ebook-runs/<run-id> --max-nodes-group 3
+```
+
+The script reads `storybook.json` from the supplied run directory and saves profiles at
+`.ebook-runs/<run-id>/character-profiles.json`. A successful rerun replaces that file.
+Each run also prints a checkpoint path under `.character-runs/checkpoints/`.
+Checkpoints are saved atomically after each completed narrative leaf or group and after
+final reconciliation. Resume a failed or interrupted run with the same StoryBook:
+
+```bash
+uv run python scripts/profile_characters.py .ebook-runs/<run-id> --resume .character-runs/checkpoints/<checkpoint-id>.json
+```
+
+Resume restores the registry and progress count, skips completed leaves, and
+restarts any unfinished leaf or group from its beginning. Changed book content is rejected.
+Existing checkpoints remain usable, and the group limit can change when resuming.
+The checkpoint contains story-derived profiles; keep it private like the other
+generated runs. For API use, pass `checkpoint_path=...` to `agent.run()` and add
+`resume=True` when continuing. Without a checkpoint path, API runs do not checkpoint.
+
+Both scripts accept `--thinking-effort` to override the model's reasoning effort:
+
+```bash
+uv run python scripts/process_ebook.py books/example.epub --model gpt-5.6-sol --thinking-effort high
+uv run python scripts/profile_characters.py .ebook-runs/<run-id> --model gpt-5.6-sol --thinking-effort high
+```
+
+Omitting the option leaves effort unspecified, using the model's default. Tau's
+levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the selected
+model's configured supported levels are checked before login. For the Codex
+provider, `off` leaves effort unspecified rather than explicitly disabling reasoning.
+
+The profiler processes each narrative leaf as a whole, carrying the accumulated
+character registry between requests. `--max-nodes-group` sets the maximum number
+of consecutive narrative leaves per extraction request (default `1`, minimum `1`).
+For API use, pass `max_nodes_group=...` to `CharacterProfilerAgent(...)`. Groups
+preserve each node's section path and text, and progress continues to count nodes.
+The size budget may reduce a group below the requested maximum. If a leaf exceeds the configured input
+budget after accounting for the system prompt, registry, JSON encoding, and repair
+headroom, it splits the leaf at paragraph boundaries where possible. The default
+input budget is 240,000 characters; this is a character guard, not automatic model
+token-window detection. An optional `max_chunk_characters` constructor argument
+can impose a smaller excerpt limit. The final pass reconciles duplicate identities.
+Model requests use short references such as `c1` and `c2` from the current registry;
+Python maps these to persistent character IDs. Validation feedback identifies the
+offending update and valid references, and rejected responses apply no changes.
+
 Custom callbacks receive an `AgentTraceEvent` with `run_id`, `agent_name`, `model`,
 `sequence`, UTC `timestamp`, and the original Tau event or a `RunEvent`:
 

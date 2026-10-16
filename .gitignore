@@ -229,3 +229,4 @@ frontend/*.tsbuildinfo
 .diorama_data/
 books/
 .ebook-runs/
+.character-runs/
