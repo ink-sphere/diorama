@@ -48,7 +48,12 @@ class _CharacterUpdate(BaseModel):
     character_name: NonEmptyText
     character_alias: list[NonEmptyText]
     character_profile_description: NonEmptyText
-    headshot_visual_prompt: NonEmptyText
+    headshot_visual_prompt: NonEmptyText = Field(
+        description=CharacterProfile.model_fields["headshot_visual_prompt"].description
+    )
+    full_body_visual_prompt: NonEmptyText = Field(
+        description=CharacterProfile.model_fields["full_body_visual_prompt"].description
+    )
 
 
 class _Updates(BaseModel):

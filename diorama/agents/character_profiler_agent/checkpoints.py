@@ -4,7 +4,7 @@ import os
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -25,6 +25,31 @@ class ProfilingCheckpoint(BaseModel):
     batch: int = Field(ge=0)
     profiles: list[CharacterProfile]
     reconciled: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def upgrade_legacy_profiles(cls, value: Any) -> Any:
+        """Keep older snapshots readable without inventing full-body evidence."""
+        if not isinstance(value, dict) or not isinstance(value.get("profiles"), list):
+            return value
+        return {
+            **value,
+            "profiles": [
+                {
+                    **profile,
+                    "full_body_visual_prompt": (
+                        "Full-body visual prompt was not generated for this legacy "
+                        "profile. Rerun profiling from the beginning to extract it "
+                        "from the book; this does not mean appearance is unspecified "
+                        "in the source."
+                    ),
+                }
+                if isinstance(profile, dict)
+                and "full_body_visual_prompt" not in profile
+                else profile
+                for profile in value["profiles"]
+            ],
+        }
 
     @model_validator(mode="after")
     def validate_state(self) -> Self:

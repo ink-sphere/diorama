@@ -1,0 +1,313 @@
+.reader [hidden] {
+  display: none !important;
+}
+.reader-views {
+  align-self: stretch;
+  display: flex;
+  gap: 25px;
+  margin-right: 24px;
+}
+.reader-views button {
+  min-height: 44px;
+  padding: 0 3px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+}
+.reader-views button:hover {
+  color: var(--ink);
+}
+.reader-views button[aria-pressed='true'] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+.characters-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.characters-layout {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.characters-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  padding: 32px 22px;
+  overflow: auto;
+  border-right: 1px solid var(--rule);
+  overscroll-behavior: contain;
+}
+.characters-list-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.characters-list-heading h2 {
+  font:
+    400 24px/1.4 'Literata',
+    serif;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+.characters-list-heading > span {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.character-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--muted);
+}
+.character-search:focus-within {
+  border-color: var(--accent);
+}
+.character-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  padding: 10px 0;
+  caret-color: var(--accent);
+}
+.character-search input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+.characters-caption {
+  margin: 15px 0 24px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.character-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.character-list li {
+  border-bottom: 1px solid var(--rule);
+}
+.character-list button {
+  width: 100%;
+  min-height: 68px;
+  padding: 17px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  text-align: left;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+}
+.character-list button > span {
+  min-width: 0;
+}
+.character-list strong {
+  display: block;
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.character-list button span > span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.65;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.character-list button > svg {
+  color: var(--muted);
+}
+.character-list button:hover,
+.character-list button[aria-current] {
+  background: var(--surface);
+}
+.character-list button[aria-current] strong,
+.character-list button[aria-current] > svg {
+  color: var(--accent);
+}
+.character-pane {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.character-profile {
+  margin: 0 auto;
+  padding: 64px 56px;
+  max-width: calc(70ch + 112px);
+  font:
+    400 var(--reading-size, 19px)/1.8 'Literata',
+    serif;
+  overflow-wrap: anywhere;
+}
+.character-profile h1 {
+  font-size: clamp(30px, 3.2vw, 42px);
+  font-weight: 400;
+  line-height: 1.3;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+  margin-bottom: 25px;
+}
+.character-aliases {
+  margin-bottom: 44px;
+  font:
+    13px/1.8 'Work Sans',
+    sans-serif;
+}
+.character-aliases > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.character-aliases p {
+  margin: 5px 0 0;
+}
+.character-description h2 {
+  font:
+    500 14px/1.6 'Work Sans',
+    sans-serif;
+  margin: 36px 0 16px;
+}
+.character-description p {
+  font-family: var(--reading-font, 'Literata', serif);
+  white-space: pre-line;
+  margin: 0 0 1.1em;
+}
+.character-appearance {
+  border-top: 1px solid var(--rule);
+  margin-top: 40px;
+  padding-top: 20px;
+  font:
+    13px/1.85 'Work Sans',
+    sans-serif;
+}
+.character-appearance summary {
+  cursor: pointer;
+  color: var(--accent);
+  padding: 4px 0;
+  font-weight: 500;
+}
+.character-appearance p {
+  margin: 18px 0 0;
+  white-space: pre-line;
+}
+.character-back {
+  display: none;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font:
+    13px/1.5 'Work Sans',
+    sans-serif;
+  min-height: 44px;
+  padding: 8px 0;
+  margin-bottom: 24px;
+}
+.characters-state {
+  flex: 1;
+  padding: 64px 32px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  overflow: auto;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.8;
+}
+.characters-state > svg {
+  margin-bottom: 25px;
+  color: var(--accent);
+}
+.characters-state h1 {
+  color: var(--ink);
+  font:
+    400 clamp(24px, 3vw, 32px)/1.4 'Literata',
+    serif;
+  letter-spacing: -0.025em;
+  margin: 0 0 18px;
+  text-wrap: balance;
+}
+.characters-state p {
+  max-width: 44ch;
+  margin: 0 0 24px;
+}
+.character-introduction {
+  min-height: 100%;
+}
+.character-no-results {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+  .characters-sidebar {
+    width: 270px;
+    padding: 28px 18px;
+  }
+  .character-profile {
+    padding: 40px 32px;
+  }
+}
+@media (max-width: 680px) {
+  .reader-header {
+    height: 112px;
+    flex-wrap: wrap;
+    align-content: space-between;
+    padding: 10px 16px 0;
+    row-gap: 0;
+  }
+  .reader-views {
+    order: 3;
+    width: 100%;
+    height: 44px;
+    margin: 0;
+    gap: 28px;
+    justify-content: center;
+  }
+  .reader-views button {
+    min-width: 90px;
+  }
+  .characters-sidebar {
+    width: 100%;
+    border: 0;
+    padding: 28px 24px;
+  }
+  .characters-layout:not(.has-selection) .character-pane,
+  .characters-layout.has-selection .characters-sidebar {
+    display: none;
+  }
+  .character-profile {
+    padding: 20px 24px 40px;
+  }
+  .character-back {
+    display: inline-flex;
+  }
+  .characters-state {
+    padding: 36px 24px;
+  }
+  .character-search input {
+    font-size: 16px;
+  }
+}

@@ -175,12 +175,13 @@ async def test_main_shows_progress_without_traces_and_closes_provider(
     output_path = path.with_name("character-profiles.json")
     assert json.loads(output_path.read_text()) == []
     assert str(output_path) in output.out
-    assert not list((tmp_path / ".character-runs").glob("*/character_profiles.json"))
+    assert not (tmp_path / ".character-runs").exists()
+    checkpoint = next(path.parent.glob("character-profiles-checkpoint-*.json"))
     assert {p.name for p in path.parent.iterdir()} == {
         "storybook.json",
         "character-profiles.json",
+        checkpoint.name,
     }
-    checkpoint = next((tmp_path / ".character-runs/checkpoints").glob("*.json"))
     assert "Checkpoint:" in output.err
     assert checkpoint.name in output.err.replace("\n", "")
     state = json.loads(checkpoint.read_text())
@@ -195,6 +196,7 @@ async def test_main_shows_progress_without_traces_and_closes_provider(
     assert {p.name for p in path.parent.iterdir()} == {
         "storybook.json",
         "character-profiles.json",
+        checkpoint.name,
     }
     monkeypatch.setattr(
         script,
@@ -211,7 +213,9 @@ async def test_main_shows_progress_without_traces_and_closes_provider(
     assert {p.name for p in path.parent.iterdir()} == {
         "storybook.json",
         "character-profiles.json",
+        checkpoint.name,
     }
+    assert not (tmp_path / ".character-runs").exists()
 
 
 def test_resume_cli_passes_checkpoint_path(monkeypatch):

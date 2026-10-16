@@ -80,12 +80,15 @@ uv run python scripts/profile_characters.py .ebook-runs/<run-id> --max-nodes-gro
 
 The script reads `storybook.json` from the supplied run directory and saves profiles at
 `.ebook-runs/<run-id>/character-profiles.json`. A successful rerun replaces that file.
-Each run also prints a checkpoint path under `.character-runs/checkpoints/`.
+Each run also prints a checkpoint path at
+`.ebook-runs/<run-id>/character-profiles-checkpoint-<checkpoint-id>.json`.
+Fresh runs use unique checkpoint filenames so previous progress is preserved.
+No separate profiling directory is created.
 Checkpoints are saved atomically after each completed narrative leaf or group and after
 final reconciliation. Resume a failed or interrupted run with the same StoryBook:
 
 ```bash
-uv run python scripts/profile_characters.py .ebook-runs/<run-id> --resume .character-runs/checkpoints/<checkpoint-id>.json
+uv run python scripts/profile_characters.py .ebook-runs/<run-id> --resume .ebook-runs/<run-id>/character-profiles-checkpoint-<checkpoint-id>.json
 ```
 
 Resume restores the registry and progress count, skips completed leaves, and

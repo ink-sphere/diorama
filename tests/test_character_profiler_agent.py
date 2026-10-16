@@ -13,7 +13,8 @@ from diorama.agents.character_profiler_agent import (
     CharacterProfilerAgent,
     CharacterProfilerError,
 )
-from diorama.agents.character_profiler_agent.agent import _narrative_leaves
+from diorama.agents.character_profiler_agent.agent import _narrative_leaves, _Updates
+from diorama.agents.character_profiler_agent.prompts import build_system_prompt
 from diorama.models.character_profile import CharacterProfile
 from diorama.models.storybook import (
     EbookMetadata,
@@ -45,6 +46,9 @@ def update(name="Alice", *, ids=(), aliases=(), description="A curious traveler.
         "character_alias": list(aliases),
         "character_profile_description": description,
         "headshot_visual_prompt": "Freckled face. Other features are unspecified.",
+        "full_body_visual_prompt": (
+            "Full figure with a freckled face. Build and clothing are unspecified."
+        ),
     }
 
 
@@ -69,6 +73,12 @@ class RegistryProvider(FakeProvider):
         reply = self.replies.pop(0)
         self._streams.append(response(reply(request) if callable(reply) else reply))
         return super().stream_response(**kwargs)
+
+
+@pytest.fixture
+def context_limit():
+    # Leave a fixed payload budget as the agent's system instructions evolve.
+    return len(build_system_prompt(_Updates.model_json_schema())) + 10_000
 
 
 async def test_scans_nested_narrative_and_enriches_one_identity(tmp_path):
@@ -168,6 +178,91 @@ async def test_updates_do_not_drop_absent_characters():
     assert [profile.character_name for profile in profiles] == ["Alice", "Bob"]
 
 
+async def test_visual_prompts_survive_enrichment_merge_checkpoint_and_publication(
+    tmp_path,
+):
+    first = update()
+    enriched = {
+        **update(ids=["c1"]),
+        "headshot_visual_prompt": "Freckles across the nose; a scar above the left brow.",
+        "full_body_visual_prompt": (
+            "Freckled face with a scar above the left brow. A red coat and mud-stained boots."
+        ),
+    }
+    merged = {
+        **enriched,
+        "existing_ids": ["c1", "c2"],
+        "headshot_visual_prompt": enriched["headshot_visual_prompt"] + " White curls.",
+        "full_body_visual_prompt": enriched["full_body_visual_prompt"]
+        + " White curls.",
+    }
+    provider = RegistryProvider(
+        [
+            [first],
+            [enriched, update("Al")],
+            [merged],
+        ]
+    )
+    checkpoint = tmp_path / "checkpoint.json"
+    profiles = await CharacterProfilerAgent(
+        provider=provider, model="fake", workspace_root=tmp_path / "runs"
+    ).run(
+        book(
+            chapter("Freckled Alice arrived."),
+            chapter(
+                "Alice wore a red coat and muddy boots. Al was Alice, with white curls."
+            ),
+        ),
+        checkpoint_path=checkpoint,
+    )
+    assert len(profiles) == 1
+    assert profiles[0].id == uuid5(NAMESPACE_URL, json.dumps(["test-book", 1, 0])).hex
+    saved = json.loads(checkpoint.read_text())["profiles"][0]
+    output = json.loads(
+        next((tmp_path / "runs").rglob("character_profiles.json")).read_text()
+    )[0]
+    for field in ("headshot_visual_prompt", "full_body_visual_prompt"):
+        assert provider.requests[1]["registry"][0][field] == first[field]
+        assert provider.requests[2]["registry"][0][field] == enriched[field]
+        assert (
+            getattr(profiles[0], field)
+            == saved[field]
+            == output[field]
+            == merged[field]
+        )
+
+
+@pytest.mark.parametrize("field", ["headshot_visual_prompt", "full_body_visual_prompt"])
+@pytest.mark.parametrize("invalid", ["missing", "", "   ", None])
+async def test_visual_prompts_are_required_and_repaired_before_applying(field, invalid):
+    broken = update()
+    if invalid == "missing":
+        del broken[field]
+    else:
+        broken[field] = invalid
+    valid = update()
+    provider = FakeProvider([response([broken]), response([valid])])
+    profiles = await CharacterProfilerAgent(provider=provider, model="fake").run(
+        book(chapter("Alice arrived."))
+    )
+    assert len(profiles) == 1
+    assert getattr(profiles[0], field) == valid[field]
+    assert field in message_text(provider.calls[1][2][0]).split("Validation error:")[1]
+    assert json.loads(message_text(provider.calls[0][2][0]))["registry"] == []
+    assert (
+        json.loads(
+            message_text(provider.calls[1][2][0]).split("\nThe previous response")[0]
+        )["registry"]
+        == []
+    )
+    schema = _Updates.model_json_schema()["$defs"]["_CharacterUpdate"]
+    assert field in schema["required"]
+    assert (
+        schema["properties"][field]["description"]
+        == CharacterProfile.model_fields[field].description
+    )
+
+
 def test_leaves_preserve_order_and_complete_text_with_raw_fallback():
     text = " ".join(f"word{index}" for index in range(100))
     source = book(chapter(text), chapter("", raw="<p>Bob <em>smiled</em>.</p>"))
@@ -203,7 +298,7 @@ async def test_explicit_limit_prefers_paragraph_boundaries_without_losing_text()
     assert "".join(excerpts) == text
 
 
-async def test_fallback_accounts_for_growing_registry_and_json_escaping():
+async def test_fallback_accounts_for_growing_registry_and_json_escaping(context_limit):
     text = ('Alice said "hello". \\ 雪\n' * 50 + "\n") * 30
 
     def reply(request):
@@ -213,7 +308,7 @@ async def test_fallback_accounts_for_growing_registry_and_json_escaping():
 
     provider = RegistryProvider([reply] * 100)
     await CharacterProfilerAgent(
-        provider=provider, model="fake", max_context_characters=20_000
+        provider=provider, model="fake", max_context_characters=context_limit
     ).run(book(chapter(text)))
     excerpts = [request["excerpt"]["text"] for request in provider.requests]
     assert len(excerpts) > 1
@@ -223,11 +318,11 @@ async def test_fallback_accounts_for_growing_registry_and_json_escaping():
         request["excerpt"]["path"] == ["Chapter"] for request in provider.requests
     )
     for _, system, messages, _ in provider.calls:
-        assert len(system) + len(message_text(messages[0])) <= 20_000
+        assert len(system) + len(message_text(messages[0])) <= context_limit
     assert all(request["registry"] for request in provider.requests[1:])
 
 
-async def test_fallback_reserves_room_for_validation_repair():
+async def test_fallback_reserves_room_for_validation_repair(context_limit):
     text = "Alice traveled. " * 2000
     invalid = {"characters": [{"character_name": "A" * 10_000}]}
     provider = FakeProvider(
@@ -242,22 +337,24 @@ async def test_fallback_reserves_room_for_validation_repair():
     )
     assert (
         await CharacterProfilerAgent(
-            provider=provider, model="fake", max_context_characters=20_000
+            provider=provider, model="fake", max_context_characters=context_limit
         ).run(book(chapter(text)))
         == []
     )
     assert "Validation error" in message_text(provider.calls[1][2][0])
     for _, system, messages, _ in provider.calls:
-        assert len(system) + len(message_text(messages[0])) <= 20_000
+        assert len(system) + len(message_text(messages[0])) <= context_limit
 
 
-async def test_fallback_fails_when_registry_leaves_no_room_for_text(tmp_path):
+async def test_fallback_fails_when_registry_leaves_no_room_for_text(
+    tmp_path, context_limit
+):
     provider = RegistryProvider([[update(description="A" * 20_000)]])
     with pytest.raises(CharacterProfilerError, match="no room for narrative text"):
         await CharacterProfilerAgent(
             provider=provider,
             model="fake",
-            max_context_characters=20_000,
+            max_context_characters=context_limit,
             workspace_root=tmp_path,
         ).run(book(chapter("Alice arrived."), chapter("Alice returned.")))
     assert len(provider.calls) == 1

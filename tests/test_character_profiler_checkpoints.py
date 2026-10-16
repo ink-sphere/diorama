@@ -115,6 +115,34 @@ async def test_resume_retries_only_reconciliation_and_can_republish(tmp_path):
     assert not no_calls.calls
 
 
+@pytest.mark.parametrize("version", [1, 2])
+async def test_legacy_profiles_without_full_body_prompt_can_resume(tmp_path, version):
+    source = book(chapter("Alice."))
+    path = tmp_path / "checkpoint.json"
+    await agent(RegistryProvider([[update()]]), tmp_path).run(
+        source, checkpoint_path=path
+    )
+    data = json.loads(path.read_text())
+    data["version"] = version
+    del data["profiles"][0]["full_body_visual_prompt"]
+    path.write_text(json.dumps(data))
+    before = path.read_bytes()
+    restored = checkpoints.load_checkpoint(path, source, 1)
+    assert path.read_bytes() == before
+    assert "not generated" in restored.profiles[0].full_body_visual_prompt
+    provider = FakeProvider([])
+    profiles = await agent(provider, tmp_path).run(
+        source, checkpoint_path=path, resume=True
+    )
+    assert not provider.calls
+    assert profiles == restored.profiles
+    assert profiles[0].id == data["profiles"][0]["id"]
+    assert (
+        profiles[0].headshot_visual_prompt
+        == data["profiles"][0]["headshot_visual_prompt"]
+    )
+
+
 @pytest.mark.parametrize(
     "corruption",
     [
@@ -127,6 +155,7 @@ async def test_resume_retries_only_reconciliation_and_can_republish(tmp_path):
         "duplicates",
         "book_id",
         "reconciled",
+        "full_body_type",
     ],
 )
 async def test_invalid_checkpoint_rejected_before_model_call(tmp_path, corruption):
@@ -156,6 +185,8 @@ async def test_invalid_checkpoint_rejected_before_model_call(tmp_path, corruptio
             data["profiles"][0]["book_id"] = "other"
         elif corruption == "reconciled":
             data["reconciled"] = True
+        elif corruption == "full_body_type":
+            data["profiles"][0]["full_body_visual_prompt"] = None
         path.write_text(json.dumps(data))
     before = path.read_bytes() if path.exists() else None
     provider = FakeProvider([])

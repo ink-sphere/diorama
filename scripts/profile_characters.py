@@ -181,7 +181,7 @@ async def main(
         checkpoint = (
             resume.expanduser().resolve()
             if resume is not None
-            else Path(".character-runs/checkpoints") / f"{uuid4().hex}.json"
+            else run_directory / f"character-profiles-checkpoint-{uuid4().hex}.json"
         )
         console.print(f"Checkpoint: {checkpoint}", markup=False)
         with create_progress(console) as progress:

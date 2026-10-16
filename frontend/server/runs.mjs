@@ -48,6 +48,15 @@ export async function readBook(root, id) {
   return { data: await readFile(path, 'utf8'), modified: info.mtime.toISOString() }
 }
 
+export async function readCharacterProfiles(root, id) {
+  const directory = await runDirectory(root, id)
+  const path = await confined(directory, resolve(directory, 'character-profiles.json'))
+  const info = await stat(path)
+  if (!info.isFile() || info.size > 16 * 1024 * 1024)
+    throw new RunError('Character profiles are too large or are not a JSON file.')
+  return readFile(path, 'utf8')
+}
+
 function countSections(nodes) {
   return nodes.reduce((count, node) => {
     if (node.is_part_of_narrative === false) return count
@@ -193,13 +202,16 @@ export function runMiddleware(root) {
         json(await listRuns(root))
         return
       }
-      const match = /^\/api\/runs\/([^/]+)\/(storybook|assets)$/.exec(url.pathname)
+      const match = /^\/api\/runs\/([^/]+)\/(storybook|characters|assets)$/.exec(url.pathname)
       if (!match) throw new RunError('This run endpoint does not exist.', 404)
       const id = decodeURIComponent(match[1])
       if (match[2] === 'storybook') {
         const { data } = await readBook(root, id)
         response.setHeader('Content-Type', 'application/json')
         response.end(data)
+      } else if (match[2] === 'characters') {
+        response.setHeader('Content-Type', 'application/json')
+        response.end(await readCharacterProfiles(root, id))
       } else {
         const asset = await readAsset(
           root,

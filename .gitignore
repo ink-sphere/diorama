@@ -229,4 +229,5 @@ frontend/*.tsbuildinfo
 .diorama_data/
 books/
 .ebook-runs/
+# Legacy checkpoints from older script versions
 .character-runs/

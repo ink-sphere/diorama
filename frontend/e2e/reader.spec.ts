@@ -37,6 +37,7 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/runs', (route) => route.fulfill({ json: { runs: [run], problems: [] } }))
   await page.route('**/api/runs/ebook-test/storybook', (route) => route.fulfill({ json: book }))
   await page.route('**/api/runs/ebook-test/assets?**', (route) => route.fulfill({ status: 404 }))
+  await page.route('**/api/runs/ebook-test/characters', (route) => route.fulfill({ status: 404 }))
 })
 
 test('opens a run, navigates nested sections, applies preferences, and resumes', async ({

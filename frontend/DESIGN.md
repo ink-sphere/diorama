@@ -45,6 +45,22 @@ typography:
     fontFamily: 'Work Sans, sans-serif'
     fontSize: '13px'
     fontWeight: 500
+  character-title:
+    fontFamily: 'Literata, serif'
+    fontSize: 'clamp(30px, 3.2vw, 42px)'
+    fontWeight: 400
+    lineHeight: 1.3
+    letterSpacing: '-0.03em'
+  character-name:
+    fontFamily: 'Work Sans, sans-serif'
+    fontSize: '14px'
+    fontWeight: 500
+  caption:
+    fontFamily: 'Work Sans, sans-serif'
+    fontSize: '11px'
+  mobile-search:
+    fontFamily: 'Work Sans, sans-serif'
+    fontSize: '16px'
 rounded:
   segmented-option: '4px'
   contents-item: '5px'
@@ -146,7 +162,7 @@ The library has a centered container (`min(1040px, 90%)`), a ruled masthead, hea
 
 The reader occupies (100dvh), with fixed-height header and footer framing independently scrolling contents and reading regions. The contents rail starts at (280px), narrows to (235px) at widths up to (900px), and grows to (310px) from (1500px). The article uses `max-width: calc(68ch + 100px)` with horizontal padding of (50px), preserving a reading measure of roughly (68ch). At the medium breakpoint its padding becomes (38px 30px).
 
-At widths up to (680px), the library toolbar and import strip stack, the reader header becomes (65px), and the article uses (32px 24px) padding. Contents becomes a disclosed overlay (`min(320px, 88vw)`) opened from the header. Running title, settings, progress percentage, and section stepping remain available.
+At widths up to (680px), the library toolbar and import strip stack, the reader header becomes (112px) with Read/Characters navigation on a second row, and the article uses (32px 24px) padding. Contents becomes a disclosed overlay (`min(320px, 88vw)`) opened from the header. Running title, settings, progress percentage, and section stepping remain available while reading.
 
 Spacing values in frontmatter are recurring distances, not a comprehensive mathematical scale. Preserve the larger article and section-navigation breathing room alongside compact interface spacing.
 
@@ -166,6 +182,8 @@ Controls have small rounded corners; contents and segmented options use their ow
 - **Contents:** nested ordered lists preserve source grouping. Separate arrow buttons expand and collapse branches; group and text-node buttons open their corresponding views. The current node uses neutral fill, green text, and medium weight. Structural types and supplementary flags appear in smaller muted text.
 - **Hierarchy:** parent overviews list immediate children as ruled rows and offer a reading action into the first text node. Clickable breadcrumbs return to ancestor nodes. Existing type, color, and control tokens carry these views.
 - **Settings:** a header disclosure opens the floating panel. A range input controls size; segmented buttons expose selected typeface and reading theme through `aria-pressed`. Preferences persist locally.
+- **Book views:** Read and Characters are explicit header buttons with pressed states and a restrained accent underline. Switching views retains the reading section and scroll position. The same paper/night tokens style both views.
+- **Characters:** an independently scrolling cast rail (320px, narrowing to 270px at the medium breakpoint) pairs alphabetical names and aliases with a spacious profile column. Search is a ruled field; cast entries use flat ruled rows and a neutral selected fill. No profile description is shown until a character is selected. Names use Literata; interface labels and aliases use Work Sans. The narrative description uses the reading text size, and Appearance is a native disclosure. On mobile, the list and selected profile occupy separate views with an All characters return action. Empty, loading, missing, and invalid states use the existing quiet typography and a recovery action where appropriate.
 - **Reading navigation:** section controls appear after the text and in the footer. The footer combines current section, book progress, and section count; its thin progress bar is hidden on mobile while the percentage remains.
 - **Content:** source HTML/Markdown keeps its hierarchy, images fit the column, tables scroll when necessary, and missing images become readable text. The book content itself stays visually quiet.
 
