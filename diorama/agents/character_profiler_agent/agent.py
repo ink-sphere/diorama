@@ -167,9 +167,10 @@ def _apply_updates(
 
 
 class CharacterProfilerAgent(BaseDioramaAgent[list[CharacterProfile]]):
-    """Scan narrative text, enrich a cast registry, then reconcile identities.
+    """Profile characters with described appearance, then reconcile identities.
 
-    Identity resolution is model-based; IDs and book ownership are assigned here.
+    Appearance eligibility and identity resolution are model-based;
+    IDs and book ownership are assigned here.
     No filesystem or shell tools are exposed to the model.
     """
 

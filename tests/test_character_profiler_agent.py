@@ -178,6 +178,62 @@ async def test_updates_do_not_drop_absent_characters():
     assert [profile.character_name for profile in profiles] == ["Alice", "Bob"]
 
 
+@pytest.mark.parametrize("max_nodes_group", [1, 2])
+async def test_no_appearance_profiles_can_publish_an_empty_cast(
+    tmp_path, max_nodes_group
+):
+    provider = RegistryProvider([[], []] if max_nodes_group == 1 else [[]])
+    checkpoint = tmp_path / "checkpoint.json"
+    profiles = await CharacterProfilerAgent(
+        provider=provider,
+        model="fake",
+        max_nodes_group=max_nodes_group,
+        workspace_root=tmp_path / "runs",
+    ).run(
+        book(chapter("Alice met Bob."), chapter("Bob told Alice about the captain.")),
+        checkpoint_path=checkpoint,
+    )
+
+    assert profiles == []
+    assert all(request["mode"] == "extract" for request in provider.requests)
+    for _, system, _, _ in provider.calls:
+        assert "Appearance is required for inclusion." in system
+        assert "Partial appearance descriptions qualify" in system
+        assert "no physical appearance is described, say so plainly" not in system
+    saved = json.loads(checkpoint.read_text())
+    assert saved["completed_nodes"] == 2
+    assert saved["reconciled"] is True
+    assert saved["profiles"] == []
+    output = next((tmp_path / "runs").rglob("character_profiles.json"))
+    assert json.loads(output.read_text()) == []
+
+
+async def test_later_appearance_allows_creation_then_narrative_only_enrichment():
+    # Scripted replies exercise registry flow; semantic eligibility is model-based.
+    initial = update(description="A freckled traveler.")
+    enriched = update(ids=["c1"], description="A freckled traveler who led the way.")
+    provider = RegistryProvider([[], [initial], [enriched]])
+
+    profiles = await CharacterProfilerAgent(provider=provider, model="fake").run(
+        book(
+            chapter("Alice met Bob."),
+            chapter("Alice had a freckled face. Bob greeted her."),
+            chapter("Alice led the way while Bob followed."),
+        )
+    )
+
+    assert provider.requests[1]["registry"] == []
+    assert len(provider.requests[2]["registry"]) == 1
+    assert [profile.character_name for profile in profiles] == ["Alice"]
+    assert (
+        profiles[0].character_profile_description
+        == enriched["character_profile_description"]
+    )
+    assert profiles[0].id == uuid5(NAMESPACE_URL, json.dumps(["test-book", 2, 0])).hex
+    for field in ("headshot_visual_prompt", "full_body_visual_prompt"):
+        assert getattr(profiles[0], field) == initial[field]
+
+
 async def test_visual_prompts_survive_enrichment_merge_checkpoint_and_publication(
     tmp_path,
 ):

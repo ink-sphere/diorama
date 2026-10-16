@@ -78,7 +78,23 @@ uv run python scripts/profile_characters.py .ebook-runs/<run-id> --trace
 uv run python scripts/profile_characters.py .ebook-runs/<run-id> --max-nodes-group 3
 ```
 
-The script reads `storybook.json` from the supplied run directory and saves profiles at
+Generate headshot images from the saved headshot visual prompts using FLUX 3
+and your `FAL_KEY` environment variable. The script also loads the project-root
+`.env` file, preserving variables already set in your environment:
+
+```bash
+uv run python scripts/generate_character_profile_images.py .ebook-runs/<run-id>
+```
+
+Images use 1k resolution, a 9:16 aspect ratio, and disabled prompt expansion.
+The script shows a Rich progress bar counting saved images and writes
+`character-profile-images/<character-id>-headshot.jpg` inside the run directory.
+IDs are URL-encoded for safe filenames. Rerunning replaces matching images.
+All prompts are submitted to fal's queue before results are collected. Images
+are saved as they finish; a failed request is reported without discarding the
+other results, and the script exits unsuccessfully if any request fails.
+
+The profiling script reads `storybook.json` from the supplied run directory and saves profiles at
 `.ebook-runs/<run-id>/character-profiles.json`. A successful rerun replaces that file.
 Each run also prints a checkpoint path at
 `.ebook-runs/<run-id>/character-profiles-checkpoint-<checkpoint-id>.json`.
