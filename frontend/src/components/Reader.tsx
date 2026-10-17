@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
@@ -22,6 +22,8 @@ import { renderSection } from '../lib/content'
 import { position, preferences, saveStored } from '../lib/storage'
 import { Contents } from './Contents'
 import { StructureOverview } from './StructureOverview'
+import { CharactersView } from './CharactersView'
+import { ReaderViews, type ReaderView } from './ReaderViews'
 
 interface Props {
   book: StoryBook
@@ -35,11 +37,12 @@ function scrollRatio(container: HTMLDivElement): number {
 }
 
 export function Reader(props: Props) {
-  const { book, onBack } = props
+  const { book, runId, onBack } = props
+  const [view, setView] = useState<ReaderView>('read')
   const navigation = useMemo(() => buildNavigation(book.structure), [book])
   if (!navigation.sections.length) {
     return (
-      <div className="reader theme-paper">
+      <div className={`reader theme-${preferences().theme}`}>
         <header className="reader-header">
           <button className="icon-button" onClick={onBack} aria-label="Back to library">
             <ArrowLeft size={19} />
@@ -48,12 +51,19 @@ export function Reader(props: Props) {
             <strong>{book.metadata.title}</strong>
             <span>{book.metadata.authors.join(', ') || 'Unknown author'}</span>
           </div>
+          <ReaderViews view={view} onChange={setView} />
         </header>
-        <main className="reading-pane">
+        <main className="reading-pane" hidden={view !== 'read'}>
           <article className="book-article">
             <p className="empty-section">This book has no narrative sections to read.</p>
           </article>
         </main>
+        <CharactersView
+          bookId={book.id}
+          runId={runId}
+          active={view === 'characters'}
+          onBack={onBack}
+        />
       </div>
     )
   }
@@ -77,6 +87,8 @@ function NarrativeReader({
       sections[0].path,
   )
   const [prefs, setPrefs] = useState(preferences)
+  const [view, setView] = useState<ReaderView>('read')
+  const activeView = useRef<ReaderView>('read')
   const [contentsOpen, setContentsOpen] = useState(false)
   const [ratio, setRatio] = useState(saved?.path === selected ? saved.ratio : 0)
   const pane = useRef<HTMLDivElement>(null)
@@ -118,7 +130,7 @@ function NarrativeReader({
   }
 
   function rememberPosition() {
-    if (pane.current) {
+    if (pane.current && activeView.current === 'read') {
       latestPosition.current = {
         path: selected,
         ratio: scrollRatio(pane.current),
@@ -126,6 +138,17 @@ function NarrativeReader({
       }
       saveStored(`position:${storageKey}`, latestPosition.current)
     }
+  }
+
+  function changeView(nextView: ReaderView) {
+    if (nextView === view) return
+    if (view === 'read') {
+      rememberPosition()
+      resumeRatio.current = latestPosition.current.ratio
+    }
+    activeView.current = nextView
+    setContentsOpen(false)
+    setView(nextView)
   }
 
   function leave() {
@@ -136,26 +159,25 @@ function NarrativeReader({
   useEffect(() => {
     saveStored('preferences', prefs)
   }, [prefs])
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (runId) {
       const url = new URL(location.href)
       url.searchParams.set('section', selected)
       history.replaceState(null, '', url)
     }
     const container = pane.current
-    if (!container) return
-    const frame = requestAnimationFrame(() => {
-      container.scrollTop =
-        resumeRatio.current * Math.max(0, container.scrollHeight - container.clientHeight)
-      const anchor = pendingAnchor.current
-      if (anchor) {
-        container.querySelector(`[id="${CSS.escape(anchor)}"]`)?.scrollIntoView({ block: 'start' })
-        pendingAnchor.current = null
-      }
-      container.focus({ preventScroll: true })
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [selected, runId])
+    if (!container || view !== 'read') return
+    // Restore before resize/scroll observers can replace the saved ratio with
+    // measurements from a pane that was hidden or had its typeface changed.
+    container.scrollTop =
+      resumeRatio.current * Math.max(0, container.scrollHeight - container.clientHeight)
+    const anchor = pendingAnchor.current
+    if (anchor) {
+      container.querySelector(`[id="${CSS.escape(anchor)}"]`)?.scrollIntoView({ block: 'start' })
+      pendingAnchor.current = null
+    }
+    container.focus({ preventScroll: true })
+  }, [selected, runId, view])
 
   useEffect(() => {
     const container = pane.current
@@ -167,7 +189,8 @@ function NarrativeReader({
       saveStored(`position:${storageKey}`, latestPosition.current)
     }
     function scroll() {
-      if (!container || latestPosition.current.path !== selected) return
+      if (!container || activeView.current !== 'read' || latestPosition.current.path !== selected)
+        return
       latestPosition.current = {
         path: selected,
         ratio: scrollRatio(container),
@@ -230,7 +253,12 @@ function NarrativeReader({
   return (
     <div
       className={`reader theme-${prefs.theme}`}
-      style={{ '--reading-size': `${prefs.fontSize}px` } as CSSProperties}
+      style={
+        {
+          '--reading-size': `${prefs.fontSize}px`,
+          '--reading-font': prefs.font === 'sans' ? "'Work Sans', sans-serif" : "'Literata', serif",
+        } as CSSProperties
+      }
     >
       <header className="reader-header">
         <button className="icon-button" onClick={leave} aria-label="Back to library">
@@ -240,12 +268,14 @@ function NarrativeReader({
           <strong>{book.metadata.title}</strong>
           <span>{book.metadata.authors.join(', ') || 'Unknown author'}</span>
         </div>
+        <ReaderViews view={view} onChange={changeView} />
         <div className="reader-actions">
           <button
             className={`icon-button contents-toggle ${contentsOpen ? 'active' : ''}`}
             onClick={() => setContentsOpen(!contentsOpen)}
             aria-label="Toggle contents"
             aria-expanded={contentsOpen}
+            hidden={view !== 'read'}
           >
             <List size={19} />
           </button>
@@ -300,7 +330,7 @@ function NarrativeReader({
           </details>
         </div>
       </header>
-      <div className="reader-layout">
+      <div className="reader-layout" hidden={view !== 'read'}>
         <aside
           className={`reader-sidebar ${contentsOpen ? 'is-open' : ''}`}
           aria-label="Book contents"
@@ -393,7 +423,13 @@ function NarrativeReader({
           </article>
         </div>
       </div>
-      <footer className="reader-footer">
+      <CharactersView
+        bookId={book.id}
+        runId={runId}
+        active={view === 'characters'}
+        onBack={leave}
+      />
+      <footer className="reader-footer" hidden={view !== 'read'}>
         <span className="footer-section">{entry.title}</span>
         <div className="reader-progress">
           <span>{progress}%</span>

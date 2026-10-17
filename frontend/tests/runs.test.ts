@@ -1,9 +1,15 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { listRuns, readAsset, readBook } from '../server/runs.mjs'
+import {
+  listRuns,
+  readAsset,
+  readBook,
+  readCharacterProfiles,
+  runMiddleware,
+} from '../server/runs.mjs'
 
 let root: string
 beforeEach(async () => {
@@ -30,6 +36,50 @@ afterEach(async () => {
 })
 
 describe('local runs', () => {
+  it('loads only the character profiles artifact from the selected run', async () => {
+    await writeFile(join(root, 'run-one/character-profiles.json'), '[]')
+    expect(await readCharacterProfiles(root, 'run-one')).toBe('[]')
+    await expect(readCharacterProfiles(root, '../outside')).rejects.toThrow('Invalid run')
+    await rm(join(root, 'run-one/character-profiles.json'))
+    await expect(readCharacterProfiles(root, 'run-one')).rejects.toMatchObject({ code: 'ENOENT' })
+    expect((await listRuns(root)).runs).toHaveLength(1)
+  })
+  it('confines character profile symlinks and limits file size', async () => {
+    const path = join(root, 'run-one/character-profiles.json')
+    await writeFile(join(root, 'outside.json'), '[]')
+    await symlink(join(root, 'outside.json'), path)
+    await expect(readCharacterProfiles(root, 'run-one')).rejects.toMatchObject({ status: 403 })
+    await rm(path)
+    await writeFile(path, '')
+    await truncate(path, 16 * 1024 * 1024 + 1)
+    await expect(readCharacterProfiles(root, 'run-one')).rejects.toThrow('too large')
+  })
+  it('serves profiles through a read-only JSON endpoint and reports missing artifacts', async () => {
+    const path = join(root, 'run-one/character-profiles.json')
+    await writeFile(path, '[]')
+    const headers = new Map<string, string>()
+    let body = ''
+    const response = {
+      statusCode: 200,
+      setHeader(name: string, value: string) {
+        headers.set(name, value)
+      },
+      end(value = '') {
+        body = value
+      },
+    }
+    const middleware = runMiddleware(root)
+    const request = { method: 'GET', url: '/api/runs/run-one/characters' }
+    await middleware(request, response, () => {})
+    expect(body).toBe('[]')
+    expect(headers.get('Content-Type')).toBe('application/json')
+    expect(headers.get('Cache-Control')).toBe('no-store')
+    await rm(path)
+    await middleware(request, response, () => {})
+    expect(response.statusCode).toBe(404)
+    await middleware({ ...request, method: 'POST' }, response, () => {})
+    expect(response.statusCode).toBe(405)
+  })
   it('opens artifact-only runs alongside the legacy layout', async () => {
     const data = await readFile(join(root, 'run-one/output/storybook.json'), 'utf8')
     await mkdir(join(root, 'run-two'))

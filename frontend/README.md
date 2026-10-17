@@ -16,6 +16,10 @@ Nodes with `is_part_of_narrative: false` and their descendants are hidden from t
 
 The reader supports section navigation, internal footnote links, saved reading position, font size, serif/sans-serif type, and paper/night themes. It renders sanitized HTML and uses Markdown for plain-text fragments. New runs contain only `storybook.json`; external image files are not retained. Older runs can serve available images from `output`, `input`, or their original ZIP/EPUB archive. Unavailable images display their alternative text.
 
+Switch between **Read** and **Characters** in the book header. The Characters view loads `.ebook-runs/<run-id>/character-profiles.json` when first opened, lists the cast alphabetically, and searches names and aliases. Select a character to read their description and expand **Appearance** for the supplied visual description. Profiles can include whole-book spoilers, so descriptions appear only after selection. Returning to Read restores the current section and scroll position; reading settings apply to both views.
+
+On mobile, selecting a character opens their profile, and **All characters** returns to the searchable list. Missing, empty, or invalid profile files have their own states and a **Reload profiles** action. Profiles must match the open book's ID. Standalone StoryBook imports remain readable but cannot automatically access a sibling profiles file; open the run from the local library to use Characters. No portraits are generated or requested.
+
 Use another run directory by setting `EBOOK_RUNS_DIR` before starting the server:
 
 ```bash
@@ -29,6 +33,6 @@ npm run build
 npm run preview
 ```
 
-Preview includes the local run API, at http://127.0.0.1:4173. A static deployment of `dist` supports the file picker; automatic run discovery requires the Vite dev or preview server. The server binds to loopback and only exposes book artifacts and image assets within the configured run directory. Reading positions and preferences are stored in this browser. No model calls or changes to ebook runs occur.
+Preview includes the local run API, at http://127.0.0.1:4173. A static deployment of `dist` supports the file picker; automatic run discovery and character profiles require the Vite dev or preview server. The server binds to loopback and only exposes book artifacts, character profiles, and image assets within the configured run directory. Reading positions and preferences are stored in this browser. No model calls or changes to ebook runs occur.
 
 Browser tests use installed Google Chrome on macOS. On other systems, run `npx playwright install chromium` first, or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to your Chrome/Chromium executable. Tests launch an isolated browser and their own server on port 5180.

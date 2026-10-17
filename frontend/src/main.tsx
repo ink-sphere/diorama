@@ -9,6 +9,7 @@ import '@fontsource/literata/600.css'
 import '@fontsource/literata/400-italic.css'
 import App from './App'
 import './styles.css'
+import './characters.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

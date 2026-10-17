@@ -16,7 +16,7 @@ The user generates ebook structure runs and wants to read their resulting StoryB
 
 ## Product Purpose
 
-Open local ebook runs and read the books stored in `output/storybook.json`, preserving their hierarchical structure and content.
+Open local ebook runs and read the books stored in `storybook.json`, preserving their hierarchical structure and content. Consult each book's generated character profiles while keeping your reading place.
 
 ## Operating Context
 
@@ -24,7 +24,7 @@ The user selected an automatically discovered local `.ebook-runs` library plus a
 
 ## Capabilities and Constraints
 
-Read existing outputs without changing ebook runs. Support nested structure, narrative and supplementary sections, original HTML and Markdown, and available book images. The StoryBook schema lives in `diorama/models/storybook.py`. Local file selection requires an explicit user action.
+Read existing outputs without changing ebook runs. Support nested structure, narrative and supplementary sections, original HTML and Markdown, and available book images. The StoryBook schema lives in `diorama/models/storybook.py`. The dedicated Characters view reads `character-profiles.json` alongside the book, following `diorama/models/character_profile.py`, with name/alias search and selected profile details. Character descriptions can reveal whole-book events. Local file selection requires an explicit user action; standalone StoryBook imports cannot automatically load sibling profile files.
 
 ## Evidence on Hand
 
