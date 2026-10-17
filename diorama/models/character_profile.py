@@ -9,13 +9,34 @@ class CharacterProfile(BaseModel):
         description="Unique identifier of the book the character belongs to."
     )
     character_name: str = Field(
-        description="The name of the character, this is the name through which the character is most commonly known as in the book."
+        description=(
+            "The character's full name as explicitly established in the storybook, "
+            "even when a shorter name or nickname is more common. Use the fullest "
+            "supported name without inventing missing parts; for an unnamed character, "
+            "use a concise distinguishing description grounded in the story. "
+            "Keep other attested names and nicknames in character_alias."
+        )
     )
     character_alias: list[str] = Field(
-        description="The aliases of the character, other names, monickers, titles, etc which the character is referred to in the story."
+        description=(
+            "All explicit, non-trivial aliases used for this character in the story: "
+            "alternate names, meaningful short names, nicknames, pseudonyms, disguise "
+            "names, and identifying titles or epithets, including those used only once. "
+            "Exclude character_name itself, duplicates, pronouns, generic references, "
+            "passing descriptions, and trivial case, whitespace, punctuation, or "
+            "possessive variants. Include only attested forms, never invented name "
+            "parts, expansions, or translations. Use an empty list if none qualify."
+        )
     )
     character_profile_description: str = Field(
-        description="A description of the character in the context of the st0ry."
+        description=(
+            "A concise introduction in one or two sentences that tells the reader "
+            "who the character is, using story-supported identity, role, key "
+            "relationships, and distinguishing traits as needed. Do not recount "
+            "their entire journey, list plot events, or summarize their character "
+            "arc. Keep this limit during enrichment and merges; use one short "
+            "sentence when evidence is sparse, without inventing details."
+        )
     )
     headshot_visual_prompt: str = Field(
         description=(

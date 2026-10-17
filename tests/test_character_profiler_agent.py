@@ -86,7 +86,10 @@ async def test_scans_nested_narrative_and_enriches_one_identity(tmp_path):
         identity = request["registry"][0]["id"]
         return [
             update(
-                "Alice", ids=[identity], aliases=["Al"], description="A brave traveler."
+                "Alice Eleanor Hart",
+                ids=[identity],
+                aliases=["Alice"],
+                description="A brave traveler.",
             )
         ]
 
@@ -98,8 +101,11 @@ async def test_scans_nested_narrative_and_enriches_one_identity(tmp_path):
             structure_title="Part One",
             is_part_of_narrative=True,
             content=[
-                chapter("Al arrived.", title="One"),
-                chapter("Alice, called Al, bravely led the way.", title="Two"),
+                chapter("Al arrived, her face freckled.", title="One"),
+                chapter(
+                    "Alice Eleanor Hart, called Alice or Al, bravely led the way.",
+                    title="Two",
+                ),
             ],
         ),
     )
@@ -113,8 +119,8 @@ async def test_scans_nested_narrative_and_enriches_one_identity(tmp_path):
     ).run(source)
     assert len(profiles) == 1
     assert isinstance(profiles[0], CharacterProfile)
-    assert profiles[0].character_name == "Alice"
-    assert profiles[0].character_alias == ["Al"]
+    assert profiles[0].character_name == "Alice Eleanor Hart"
+    assert profiles[0].character_alias == ["Alice", "Al"]
     assert profiles[0].book_id == source.id
     assert profiles[0].id == uuid5(NAMESPACE_URL, json.dumps(["test-book", 1, 0])).hex
     assert provider.requests[1]["registry"][0]["id"] == "c1"
@@ -144,14 +150,16 @@ async def test_reconciliation_merges_aliases_but_preserves_same_name_people():
         first, alias, other = request["registry"]
         return [
             update(
-                "Alice", ids=[alias["id"], first["id"]], aliases=[" Al ", "AL", "alice"]
+                "Alice Eleanor Hart",
+                ids=[alias["id"], first["id"]],
+                aliases=[" Al ", "AL", "alice", "Alice Eleanor Hart"],
             )
         ]
 
     provider = RegistryProvider(
         [
             [
-                update("Alice", aliases=["Traveler"]),
+                update("Alice", aliases=["Traveler", "Alice Eleanor Hart"]),
                 update("Al"),
                 update("Alice", description="A different person."),
             ],
@@ -159,15 +167,106 @@ async def test_reconciliation_merges_aliases_but_preserves_same_name_people():
         ]
     )
     profiles = await CharacterProfilerAgent(provider=provider, model="fake").run(
-        book(chapter("Alice, also called Al, met another Alice."))
+        book(
+            chapter(
+                "Freckled Alice Eleanor Hart, also called Alice or Al, "
+                "met another Alice wearing a blue coat."
+            )
+        )
     )
     assert len(profiles) == 2
-    assert profiles[0].character_alias == ["Al", "Traveler"]
+    assert profiles[0].character_name == "Alice Eleanor Hart"
+    assert profiles[0].character_alias == ["Al", "alice", "Traveler"]
     assert profiles[0].id == uuid5(NAMESPACE_URL, json.dumps(["test-book", 1, 0])).hex
     assert provider.requests[1]["registry"][0]["id"] == "c1"
     assert "book_id" not in provider.requests[1]["registry"][0]
     assert profiles[0].id != profiles[1].id
     assert profiles[1].character_profile_description == "A different person."
+
+
+def test_full_name_guidance_reaches_the_model_schema_and_prompt():
+    schema = _Updates.model_json_schema()
+    description = schema["$defs"]["_CharacterUpdate"]["properties"]["character_name"][
+        "description"
+    ]
+    assert description == CharacterProfile.model_fields["character_name"].description
+    assert "full name as explicitly established in the storybook" in description
+    prompt = build_system_prompt(schema)
+    assert "never invent a surname, expand initials" in prompt
+    assert "Preserve an established full name" in prompt
+    assert "use the fullest explicitly established name for each identity" in prompt
+
+
+def test_alias_guidance_reaches_the_model_schema_and_prompt():
+    schema = _Updates.model_json_schema()
+    description = schema["$defs"]["_CharacterUpdate"]["properties"]["character_alias"][
+        "description"
+    ]
+    assert description == CharacterProfile.model_fields["character_alias"].description
+    assert "All explicit, non-trivial aliases" in description
+    assert "including those used only once" in description
+    prompt = build_system_prompt(schema)
+    assert "Exclude character_name itself, duplicates, all pronouns" in prompt
+    assert "Emit an update\n  when a new qualifying alias appears" in prompt
+    assert "each form must actually be used" in prompt
+    assert "preserve all qualifying aliases across merges" in prompt
+
+
+def test_description_guidance_reaches_the_model_schema_and_prompt():
+    schema = _Updates.model_json_schema()
+    description = schema["$defs"]["_CharacterUpdate"]["properties"][
+        "character_profile_description"
+    ]["description"]
+    assert (
+        description
+        == CharacterProfile.model_fields["character_profile_description"].description
+    )
+    assert "one or two sentences" in description
+    assert "tells the reader who the character is" in description
+    prompt = build_system_prompt(schema)
+    assert "Do not recount their entire journey" in prompt
+    assert "do not concatenate descriptions or retain\nplot histories" in prompt
+    assert "Preserve discoveries and developments across excerpts" not in prompt
+    assert "significant actions, and appearance" not in prompt
+
+
+async def test_alias_only_updates_accumulate_across_excerpts(tmp_path):
+    # Scripted replies check accumulation, not model-based alias selection.
+    name = "Elizabeth Hart"
+    provider = RegistryProvider(
+        [
+            [update(name, aliases=["Liz"])],
+            [update(name, ids=["c1"], aliases=["the Silver Fox", "L. Reed"])],
+            [update(name, ids=["c1"], aliases=["Captain Hart", "Liz"])],
+        ]
+    )
+    checkpoint = tmp_path / "checkpoint.json"
+    profiles = await CharacterProfilerAgent(provider=provider, model="fake").run(
+        book(
+            chapter("Freckled Elizabeth Hart was called Liz by her friends."),
+            chapter(
+                "Liz, known as the Silver Fox, once used the name L. Reed. "
+                "She told her friend about herself."
+            ),
+            chapter("The crew addressed Liz as Captain Hart."),
+        ),
+        checkpoint_path=checkpoint,
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0].character_name == name
+    assert set(profiles[0].character_alias) == {
+        "Liz",
+        "the Silver Fox",
+        "L. Reed",
+        "Captain Hart",
+    }
+    assert set(provider.requests[2]["registry"][0]["character_alias"]) == {
+        "Liz",
+        "the Silver Fox",
+        "L. Reed",
+    }
+    assert json.loads(checkpoint.read_text())["profiles"][0] == profiles[0].model_dump()
 
 
 async def test_updates_do_not_drop_absent_characters():

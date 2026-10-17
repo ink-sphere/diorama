@@ -45,9 +45,17 @@ class _CharacterUpdate(BaseModel):
     existing_ids: list[NonEmptyText] = Field(
         description="Short references from the CURRENT registry (e.g. c1, c2); empty for a new character."
     )
-    character_name: NonEmptyText
-    character_alias: list[NonEmptyText]
-    character_profile_description: NonEmptyText
+    character_name: NonEmptyText = Field(
+        description=CharacterProfile.model_fields["character_name"].description
+    )
+    character_alias: list[NonEmptyText] = Field(
+        description=CharacterProfile.model_fields["character_alias"].description
+    )
+    character_profile_description: NonEmptyText = Field(
+        description=CharacterProfile.model_fields[
+            "character_profile_description"
+        ].description
+    )
     headshot_visual_prompt: NonEmptyText = Field(
         description=CharacterProfile.model_fields["headshot_visual_prompt"].description
     )
