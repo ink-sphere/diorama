@@ -5,8 +5,25 @@ import pytest
 from conftest import as_book
 
 from diorama.agent import harness as module
+from diorama.agent.preparation import read_preview
 from diorama.agent.tools import InvalidCandidate, InvalidEpub, inspect_epub
 from diorama.agent.worker import WorkerError, WorkerLost
+
+
+def test_optional_previews_require_source_headings_and_safe_files(tmp_path):
+    snapshot = tmp_path / "preview.json"
+    source = tmp_path / "titles"
+    source.write_text('[[0,"Act I"]]')
+    titles = {"Act I"}
+    snapshot.symlink_to(source)
+    assert read_preview(snapshot, titles) == []
+    snapshot.unlink()
+    os.mkfifo(snapshot)
+    assert read_preview(snapshot, titles) == []
+    snapshot.unlink()
+    for content in ('[[0,"invented"]]', '[[2,"Act I"]]', "{", " " * 20000):
+        snapshot.write_text(content)
+        assert read_preview(snapshot, titles) == []
 
 
 async def test_reuses_validated_edition(harness_factory, epub_factory):

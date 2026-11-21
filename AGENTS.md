@@ -28,6 +28,12 @@ Design agents, tools, and harnesses in `diorama/` around composability and inher
 
 Diorama aims to deepen story immersion through an AI-assisted reading experience. The Library queues uploaded EPUBs for `diorama.backend.ingestion.BookIngestion`. The Reader serves passages from validated editions. Settings connects ChatGPT to Geppetto’s dedicated Docker profile. Exercise the full upload-to-reader flow with `uv run pytest tests/test_web_ingestion.py`.
 
+Use “Start Reading” for a prepared edition’s first-read action. Keep the Library’s seascape and upload action above the shelf at every book count. Show reading availability and book actions on the shelf. Present live milestones, execution history and the preparation preview only inside the explicitly opened Agent trace drawer. Keep SDK output in lazy-loaded event details and scope trace listeners to each ingestion. Keep the followed edition independent of the active Reader bookmark. Open the Reader after verified passages have been published.
+
+The [ingestion experience implementation plan](docs/ingestion-experience-plan.md) specifies the worker event contract, Library migration, and migration acceptance checks. The Library presentation follows the product direction above.
+
+Keep **Remove from library** visible on each shelf entry. Disable it during active preparation and confirm the targeted edition by title. Library removal applies to one EPUB digest and its files inside the managed library. Verify that a restart cannot reimport a removed edition and that an explicit reupload can prepare it again.
+
 Design Geppetto as a coding agent with custom instructions. Its first and only planned skill for layer 1 is automatic EPUB ingestion. The skill infers each book's hierarchy and preserves its original text.
 
 Keep Geppetto's standing instructions about its work with books. Configure coding capabilities in the harness and verify them through execution. Follow the [Geppetto harness execution sequence](docs/geppetto-harness-plan.md#execution-sequence-and-acceptance-checks) for implementation order and per-change tests.

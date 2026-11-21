@@ -25,12 +25,9 @@
         <div class="stage">
           <img id="art" src="/assets/seascape.webp" alt="" />
           <div class="wrap scene">
-            <div id="scene-copy">
-              <p id="author" class="author"></p>
-              <h1 id="title">Your library</h1>
-              <p id="excerpt">Add an EPUB to begin reading.</p>
-              <button id="action" class="light" hidden></button>
-            </div>
+            <h1 id="title">Your library</h1>
+            <p>Add an EPUB and Geppetto will prepare it for reading.</p>
+            <button id="hero-add" class="light">Choose your first EPUB</button>
           </div>
         </div>
         <div class="wrap collection">
@@ -50,6 +47,24 @@
           <p id="notice" role="status" hidden></p>
           <div id="shelf" aria-label="Books in your library"></div>
         </div>
+        <dialog
+          id="remove-dialog"
+          aria-labelledby="remove-title"
+          aria-describedby="remove-description"
+        >
+          <form id="remove-form">
+            <h2 id="remove-title"></h2>
+            <p id="remove-description">
+              This deletes Diorama’s copy, its agent trace, and your saved place
+              in this browser. You can add the original EPUB again.
+            </p>
+            <p id="remove-error" role="alert" hidden></p>
+            <div class="dialog-actions">
+              <button id="cancel-remove" type="button" autofocus>Cancel</button>
+              <button id="confirm-remove" type="submit">Remove book</button>
+            </div>
+          </form>
+        </dialog>
       </section>
       <section id="settings" class="wrap inner" hidden>
         <h1>Settings</h1>
@@ -85,8 +100,49 @@
       </section>
       <p class="wrap error" id="error" role="alert" hidden></p>
     </main>
+    <dialog
+      id="trace-sheet"
+      aria-labelledby="trace-heading"
+      aria-describedby="trace-book"
+    >
+      <div class="sheet-layout">
+        <div class="sheet-heading">
+          <div>
+            <p id="trace-book"></p>
+            <h2 id="trace-heading">Agent trace</h2>
+          </div>
+          <button id="close-trace" autofocus>Close</button>
+        </div>
+        <div id="trace-scroll" tabindex="0" aria-label="Execution history">
+          <details id="book-preview" hidden>
+            <summary>Book preview</summary>
+            <label for="preview-section">Contents</label>
+            <select id="preview-section"></select>
+            <blockquote id="source-excerpt"></blockquote>
+          </details>
+          <ol id="trace-list"></ol>
+          <p id="trace-status" role="status"></p>
+          <button id="retry-trace" hidden>Reload trace</button>
+        </div>
+        <div class="sheet-bottom">
+          <span id="trace-count"></span
+          ><button id="trace-latest">Jump to latest ↓</button>
+        </div>
+      </div>
+    </dialog>
     <footer class="wrap">
-      <span>Diorama</span><span>Personal library</span>
+      <span>Diorama</span>
+      <div class="footer-links">
+        <button
+          id="open-trace"
+          class="trace-link"
+          aria-haspopup="dialog"
+          hidden
+        >
+          Agent trace
+        </button>
+        <span>Personal library</span>
+      </div>
     </footer>
   </body>
 </html>

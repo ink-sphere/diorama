@@ -9,16 +9,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from sysconfig import get_path
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from openai_codex import AsyncCodex
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from diorama.agent.tools import MAX_ARCHIVE, InvalidEpub
+from diorama.backend import events
 from diorama.backend.account import AccountConnection, account_client
 from diorama.backend.ingestion import BookIngestion
-from diorama.backend.library import Library
+from diorama.backend.library import BookPreparing, Library
 
 
 def create_app(
@@ -118,6 +119,21 @@ def create_app(
         library.retry(digest)
         return book(digest)
 
+    @app.delete("/api/books/{digest}", status_code=204)
+    def remove_book(digest: str) -> Response:
+        try:
+            library.remove(digest)
+        except BookPreparing as exc:
+            raise HTTPException(
+                409,
+                "Geppetto is preparing this edition. Try again once preparation finishes.",
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                503, "Removal was interrupted. Try removing this book again."
+            ) from exc
+        return Response(status_code=204)
+
     @app.get("/api/books/{digest}/cover")
     def cover(digest: str) -> Response:
         with library.database() as db:
@@ -138,6 +154,57 @@ def create_app(
                 )
             ]
         return {"book": row, "pages": pages}
+
+    @app.get("/api/books/{digest}/activity")
+    def activity(digest: str) -> dict:
+        with library.database() as db:
+            db.execute("BEGIN")
+            snapshot = events.activity(db, digest)
+        if snapshot is None:
+            raise HTTPException(404, "Book not found.")
+        return snapshot
+
+    @app.get("/api/books/{digest}/trace")
+    def trace(
+        digest: str,
+        after: int = Query(0, ge=0, le=2**63 - 1),
+        limit: int = Query(50, ge=1, le=100),
+    ) -> dict:
+        with library.database() as db:
+            db.execute("BEGIN")
+            row = db.execute(
+                "SELECT id FROM books WHERE id=? AND status!='removing'", (digest,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "Book not found.")
+            registration = db.execute(
+                "SELECT min(seq) FROM ingestion_events WHERE book=?", (digest,)
+            ).fetchone()[0]
+            return {
+                "registration_seq": registration,
+                **events.trace_page(db, digest, after, limit),
+            }
+
+    @app.get("/api/books/{digest}/trace/{seq}")
+    def trace_detail(digest: str, seq: int) -> dict:
+        with library.database() as db:
+            db.execute("BEGIN")
+            row = db.execute(
+                "SELECT id FROM books WHERE id=? AND status!='removing'", (digest,)
+            ).fetchone()
+            detail = (
+                events.trace_detail(db, digest, seq)
+                if row and 0 < seq < 2**63
+                else None
+            )
+        if detail is None:
+            raise HTTPException(404, "Trace entry not found.")
+        return detail
+
+    @app.get("/api/books/{digest}/preparation")
+    def preparation(digest: str) -> dict:
+        book(digest)
+        return library.preparation(digest)
 
     @app.get("/api/books/{digest}/pages/{number}")
     def read_page(digest: str, number: int) -> dict:

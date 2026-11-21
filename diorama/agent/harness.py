@@ -11,12 +11,17 @@ import stat
 import tempfile
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from pydantic import ValidationError
 
 from diorama.agent.geppetto import Geppetto
+from diorama.agent.preparation import (
+    PreparationUpdate,
+    ProgressListener,
+    follow_outline,
+)
 from diorama.agent.tools import (
     MAX_ARCHIVE,
     InvalidCandidate,
@@ -25,6 +30,7 @@ from diorama.agent.tools import (
     inspect_epub,
     validate_hierarchy,
 )
+from diorama.agent.trace import TracedWorker, TraceEvent, TraceListener
 from diorama.agent.worker import Worker, WorkerLost, ingestion_task
 from diorama.schemas.book import Book
 
@@ -132,7 +138,14 @@ class GeppettoHarness:
     publication_root: Path
     timeout_seconds: float = 600
 
-    async def ingest_epub(self, *, book_id: str, source_epub: Path) -> IngestionResult:
+    async def ingest_epub(
+        self,
+        *,
+        book_id: str,
+        source_epub: Path,
+        on_progress: ProgressListener | None = None,
+        on_trace: TraceListener | None = None,
+    ) -> IngestionResult:
         """Retain the edition and return its validated manifest for this book ID.
 
         A matching published manifest is reused. An invalid candidate gets one
@@ -163,34 +176,121 @@ class GeppettoHarness:
             manifest = directory / f"{key}.json"
             if not manifest.exists():
                 index = await asyncio.to_thread(inspect_epub, edition)
+                if on_progress:
+                    count = sum(
+                        doc.linear and bool(doc.text.strip()) for doc in index.spine
+                    )
+                    on_progress(
+                        PreparationUpdate(
+                            "indexed",
+                            f"Indexed the text of {count} reading-order document{'s' if count != 1 else ''}.",
+                        )
+                    )
                 for attempt in range(2):
                     try:
-                        data = await self._attempt(book_id, edition, index)
+                        data = await self._attempt(
+                            book_id, edition, index, on_progress, on_trace, attempt + 1
+                        )
                         break
                     except WorkerLost:
                         if attempt:
                             raise
+                        if on_progress:
+                            on_progress(
+                                PreparationUpdate(
+                                    "restarting",
+                                    "Lost contact with the worker. Started a fresh attempt.",
+                                )
+                            )
                         logger.warning("Retrying lost worker for edition %s", digest)
                 with tempfile.NamedTemporaryFile(dir=directory) as staged:
                     staged.write(data)
                     staged.flush()
                     os.fsync(staged.fileno())
                     _claim(Path(staged.name), manifest)
+            elif on_progress:
+                on_progress(
+                    PreparationUpdate(
+                        "cached", "Found a previously verified copy of this edition."
+                    )
+                )
             winner = Book.model_validate_json(manifest.read_bytes())
             return IngestionResult(
                 manifest, edition, digest, tuple(winner.uncertainties)
             )
 
-    async def _attempt(self, book_id: str, edition: Path, index: SourceIndex) -> bytes:
+    async def _attempt(
+        self,
+        book_id: str,
+        edition: Path,
+        index: SourceIndex,
+        on_progress: ProgressListener | None,
+        on_trace: TraceListener | None,
+        attempt: int,
+    ) -> bytes:
         with tempfile.TemporaryDirectory(prefix="geppetto-") as workspace:
             scratch = Path(workspace)
             logger.info("Starting ingestion attempt=%s", scratch.name)
             async with self.worker_factory(self.agent, edition, scratch) as worker:
-                await worker.run(ingestion_task(self.agent, book_id))
+
+                async def invoke(task: str, purpose: str) -> None:
+                    if on_trace is None or not isinstance(worker, TracedWorker):
+                        await worker.run(task)
+                        return
+
+                    async def emit(event: TraceEvent) -> None:
+                        try:
+                            await on_trace(
+                                replace(event, attempt=attempt, purpose=purpose)
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Trace listener unavailable attempt=%d purpose=%s",
+                                attempt,
+                                purpose,
+                            )
+
+                    await worker.run_traced(task, emit)
+
+                task = ingestion_task(self.agent, book_id)
+                if on_progress:
+                    on_progress(
+                        PreparationUpdate(
+                            "mapping",
+                            "Started organizing the sections in reading order.",
+                        )
+                    )
+                    await follow_outline(
+                        invoke(task, "ingest"), scratch, index, on_progress
+                    )
+                else:
+                    await invoke(task, "ingest")
                 try:
+                    if on_progress:
+                        on_progress(
+                            PreparationUpdate(
+                                "checking",
+                                "Started checking passage coverage and reading order against the EPUB.",
+                            )
+                        )
                     return await asyncio.to_thread(_candidate, scratch, index, book_id)
                 except InvalidCandidate as exc:
-                    await worker.run(
-                        f"Repair /work/candidate.json and run the checker again. Diagnostic: {exc}"
+                    if on_progress:
+                        on_progress(
+                            PreparationUpdate(
+                                "repairing",
+                                "The first text check found a mismatch. Sent the structure back for correction.",
+                            )
+                        )
+                    await invoke(
+                        f"Repair /work/candidate.json and run the checker again. Diagnostic: {exc}",
+                        "repair",
+                    )
+                if on_progress:
+                    on_progress(
+                        PreparationUpdate(
+                            "checking",
+                            "Started checking the corrected structure against the EPUB.",
+                        )
                     )
                 return await asyncio.to_thread(_candidate, scratch, index, book_id)

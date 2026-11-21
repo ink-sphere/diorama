@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -27,6 +27,7 @@ from openai_codex import (
 )
 
 from diorama.agent.geppetto import Geppetto
+from diorama.agent.trace import TraceEvent, TraceListener, project
 
 logger = logging.getLogger(__name__)
 IMAGE = "diorama-geppetto:local"
@@ -58,12 +59,57 @@ class Worker:
         On caller cancellation, request interruption of the active turn.
         The harness reads and validates the worker's candidate separately.
         """
+        await self.execute(task, None)
+
+    async def run_traced(self, task: str, emit: TraceListener) -> None:
+        """Deliver public execution records while this turn is running."""
+        await self.execute(task, emit)
+
+    async def execute(self, task: str, emit: TraceListener | None) -> None:
         started = time.monotonic()
         handle = await self.thread.turn(
             [TextInput(task), SkillInput("ingest-epub", SKILL)]
         )
         try:
-            result = await handle.run()
+            if emit is None:
+                result = await handle.run()
+                status, usage = result.status.value, result.usage
+            else:
+                status, usage = None, None
+                async with aclosing(handle.stream()) as stream:
+                    async for event in stream:
+                        if event.method == "thread/tokenUsage/updated":
+                            usage = event.payload.token_usage
+                        if (
+                            event.method == "turn/completed"
+                            and event.payload.turn.id == handle.id
+                        ):
+                            status = event.payload.turn.status.value
+                        try:
+                            record = project(event)
+                        except Exception:
+                            record = TraceEvent(
+                                "capture_gap",
+                                time.time_ns() // 1_000_000,
+                                self.thread.id,
+                                handle.id,
+                                None,
+                                {},
+                                {},
+                            )
+                        if record is None:
+                            continue
+                        try:
+                            await emit(record)
+                        except Exception:
+                            logger.warning(
+                                "Trace capture gap thread=%s turn=%s method=%s",
+                                self.thread.id,
+                                handle.id,
+                                event.method,
+                            )
+                if status is None:
+                    raise WorkerError("Worker stream ended before turn completion")
         except asyncio.CancelledError:
             logger.info(
                 "Cancelled thread=%s turn=%s duration=%.2f",
@@ -89,14 +135,12 @@ class Worker:
             "Finished thread=%s turn=%s outcome=%s duration=%.2f usage=%s",
             self.thread.id,
             handle.id,
-            result.status.value,
+            status,
             time.monotonic() - started,
-            result.usage,
+            usage,
         )
-        if result.status.value != "completed":
-            raise WorkerError(
-                f"Turn {handle.id} ended with status {result.status.value}"
-            )
+        if status != "completed":
+            raise WorkerError(f"Turn {handle.id} ended with status {status}")
 
 
 async def _docker(*args: str) -> str:

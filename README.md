@@ -12,9 +12,11 @@ uv run uvicorn diorama.backend.app:create_app --factory --host 127.0.0.1 --port 
 
 Open [Diorama](http://127.0.0.1:8000). In **Settings**, select **Connect ChatGPT** and complete device sign-in on the verification page. In **Library**, choose **Add EPUB**. You can leave the page while Geppetto works. An upload that needs sign-in stays on the shelf and resumes after the connection succeeds.
 
-Choose **Start reading** once the edition is ready. **Contents** follows the hierarchy Geppetto inferred, including nested sections. The reader preserves the original indexed text and remembers the last section in this browser. The library uses cover artwork from the EPUB when available.
+New books appear under **Your shelf**, below the seascape. Each entry shows reading availability and its reading and removal actions. Open the book’s **Agent trace** to see Geppetto’s live activity, recorded commands, file changes and turn outcomes. The drawer also contains a collapsible source preview when excerpts are available. While reading, the footer’s **Agent trace** opens the followed upload or, if there is none, the current edition. Expand an entry to see its available fields. Older editions retain their recorded Library history. Choose **Start Reading** once the verified passages are ready. **Contents** follows the hierarchy Geppetto inferred, including nested sections. The reader preserves the original indexed text and remembers the last section in this browser. The library uses cover artwork from the EPUB when available.
 
 The server keeps editions, validated manifests, and its SQLite shelf under `.diorama_data/` in the launch directory. Identical EPUB bytes share a shelf entry. Failed jobs support retry, and interrupted jobs resume when the server restarts. Previously published Python API manifests are imported from the same directory. Uploads accept EPUBs up to 128 MiB. Settings and the ingestion worker share the dedicated Docker profile described below.
+
+Under **Your shelf**, choose **Remove from library** beneath the book’s title and confirm its name. The action becomes available when active preparation finishes. Removal deletes Diorama’s archived EPUB, manifests for that edition, reading sections, agent trace, and saved reading position in this browser. You can add the original EPUB again.
 
 The library background uses Albert Pinkham Ryder’s *The Flying Dutchman*, from the [Standard Ebooks edition of Moby-Dick](https://standardebooks.org/ebooks/herman-melville/moby-dick). Font licenses accompany the local assets in `frontend/assets/`.
 

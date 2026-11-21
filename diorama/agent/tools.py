@@ -50,6 +50,7 @@ class Heading:
     offset: int
     title: str
     level: int
+    anchor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,7 +146,12 @@ def _document(root: etree._Element, name: str) -> Document:
             return
         if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             headings.append(
-                Heading(offset, "".join(node.itertext()).strip(), int(tag[1]))
+                Heading(
+                    offset,
+                    "".join(node.itertext()).strip(),
+                    int(tag[1]),
+                    node.get("id"),
+                )
             )
         if tag == "a" and node.get("href"):
             links.append(node.get("href"))

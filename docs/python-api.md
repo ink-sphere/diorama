@@ -39,6 +39,29 @@ In an async application, create a library with `BookIngestion.local(data_root)` 
 
 Diorama stores editions by digest under `editions/` and manifests under `manifests/`. A repeated request reuses the manifest when the book ID, edition digest, ingestion version, instructions, and skill text match. Concurrent successful attempts for the same key return the same published file. A changed EPUB gets its own edition and manifest, so saved paths still open the earlier version.
 
+Removing an edition through the web Library deletes that digest’s archived EPUB and manifests from the shared data directory. Adding the EPUB again prepares a fresh library entry.
+
+Pass a synchronous listener such as `on_progress=lambda update: print(update.note)` to `add_book` to observe indexing, outline discoveries, validation, and any repair attempts. A `PreparationUpdate` can carry an opening outline of `(depth, title)` pairs. Its optional `previews` entries carry a stable key, depth and title. An excerpt includes the exact `source` range and up to 320 Unicode code points of indexed text. Ambiguous headings have labels only.
+
+Pass an asynchronous `on_trace` listener to receive display-safe `TraceEvent` instances in order. Each includes the SDK method, host receipt time, thread and turn IDs, attempt, purpose, approved fields, and any omission or truncation markers. A worker implementing only `run(task)` can still report preparation milestones. Cached ingestions have no new SDK turn.
+
+```python
+from pathlib import Path
+
+from diorama.agent.trace import TraceEvent
+from diorama.backend.ingestion import BookIngestion
+
+
+async def observe(event: TraceEvent) -> None:
+    print(event.attempt, event.purpose, event.name, event.fields.get("status"))
+
+
+library = BookIngestion.local()
+result = await library.add_book("my-edition", Path("book.epub"), on_trace=observe)
+```
+
+The web Library stores observations alongside each edition in SQLite. Read the current snapshot at `/api/books/{digest}/activity`, follow its ordered history at `/api/books/{digest}/trace?after=0&limit=50`, and fetch individual records at `/api/books/{digest}/trace/{seq}`. The legacy `/preparation` endpoint exposes the latest 32 Library notes.
+
 ## Resolve passages in reading order
 
 A `Section` has a label, an optional title, and ordered children. A child can be another section or a `Passage`. For example, an act can contain a stage direction followed by two scenes. Visit children in their stored order to keep that stage direction in place.
