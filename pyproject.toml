@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.14.3",
     "ebooklib>=0.20",
+    "lxml>=5",
     "html2text>=2025.4.15",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.9",
@@ -22,10 +23,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     "rich>=14.3.3",
     "typer>=0.12",
-    "litellm>=1.90.0",
-    "weave>=0.52.43",
     "httpx>=0.28.1",
-    "tau-ai>=0.4.7",
+    "openai-codex>=0.171.0",
 ]
 
 [dependency-groups]
@@ -63,11 +62,24 @@ build = [
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "resources/geppetto/**/*" }, { file = "frontend/**/*" }]
+
 [tool.hatch.version]
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["diorama"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/diorama", "/resources/geppetto", "/frontend", "/tests", "/README.md", "/pyproject.toml"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"frontend" = "share/diorama/frontend"
+"resources/geppetto/instructions.md" = "share/diorama/geppetto/instructions.md"
+"resources/geppetto/skills" = "share/diorama/geppetto/skills"
+"resources/geppetto/worker-seccomp.json" = "share/diorama/geppetto/worker-seccomp.json"
+"resources/geppetto/worker-seccomp.LICENSE" = "share/diorama/geppetto/worker-seccomp.LICENSE"
 
 [tool.ruff]
 target-version = "py312"

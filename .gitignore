@@ -229,3 +229,6 @@ frontend/*.tsbuildinfo
 .diorama_data/
 books/
 .ebook-runs/
+
+# Local design previews
+.superpowers/brainstorm/

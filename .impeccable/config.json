@@ -1,0 +1,53 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "instrument serif",
+        "files": [
+          ".superpowers/brainstorm/12876-1795260926/content/preview.css"
+        ],
+        "createdAt": "2026-11-21T11:43:53.872Z",
+        "reason": "Designer choice for this mockup: the narrow display face fits illustrated book jackets and chapter headings; Crimson Text carries passage text."
+      },
+      {
+        "rule": "overused-font",
+        "value": "instrument serif",
+        "files": [
+          ".superpowers/brainstorm/12876-1795260926/content/three-page-design.html"
+        ],
+        "createdAt": "2026-11-21T11:43:53.933Z",
+        "reason": "Designer choice for this mockup: the page renders the same jacket and heading typography defined in preview.css."
+      },
+      {
+        "rule": "cream-palette",
+        "value": "*",
+        "files": [
+          ".superpowers/brainstorm/12876-1795260926/content/three-page-design.html"
+        ],
+        "createdAt": "2026-11-21T11:43:53.990Z",
+        "reason": "Designer choice for this mockup: both reader treatments share the same paper ground so their comparison isolates the chapter opening."
+      },
+      {
+        "rule": "overused-font",
+        "value": "instrument serif",
+        "files": [
+          ".superpowers/brainstorm/12876-1795260926/content/library-reading-room.html"
+        ],
+        "createdAt": "2026-11-21T12:04:04.955Z",
+        "reason": "Designer choice for this mockup: the Library titles use Gloock. The shared Reader stylesheet uses Instrument Serif for the story edition chapter headings."
+      },
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          "frontend/index.html"
+        ],
+        "createdAt": "2026-11-21T12:28:04.762Z",
+        "reason": "Design review verified that only the Library artwork reaches the stage edges. Its centered text has 17.5px side margins at 390px and 64.8px at 1440px."
+      }
+    ]
+  }
+}

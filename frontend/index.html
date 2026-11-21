@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#112520" />
+    <title>Diorama · Library</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <a class="skip" href="#main-content">Skip to content</a>
+    <header>
+      <div class="bar">
+        <a class="wordmark" href="#library"
+          ><i aria-hidden="true"></i>Diorama</a
+        >
+        <nav aria-label="Main navigation">
+          <a href="#library">Library</a><a href="#settings">Settings</a>
+        </nav>
+      </div>
+    </header>
+    <main id="main-content" tabindex="-1">
+      <section id="library">
+        <div class="stage">
+          <img id="art" src="/assets/seascape.webp" alt="" />
+          <div class="wrap scene">
+            <div id="scene-copy">
+              <p id="author" class="author"></p>
+              <h1 id="title">Your library</h1>
+              <p id="excerpt">Add an EPUB to begin reading.</p>
+              <button id="action" class="light" hidden></button>
+            </div>
+          </div>
+        </div>
+        <div class="wrap collection">
+          <div class="heading">
+            <div>
+              <h2>Your shelf</h2>
+              <span id="count"></span>
+            </div>
+            <button id="add">＋ Add EPUB</button>
+          </div>
+          <input
+            id="file"
+            type="file"
+            accept=".epub,application/epub+zip"
+            hidden
+          />
+          <p id="notice" role="status" hidden></p>
+          <div id="shelf" aria-label="Books in your library"></div>
+        </div>
+      </section>
+      <section id="settings" class="wrap inner" hidden>
+        <h1>Settings</h1>
+        <div class="setting">
+          <h2>Geppetto</h2>
+          <div>
+            <h3>ChatGPT account</h3>
+            <p>
+              Connect ChatGPT so Geppetto can prepare your EPUBs. Books already
+              prepared stay available to read.
+            </p>
+            <div id="account" aria-live="polite"></div>
+          </div>
+        </div>
+      </section>
+      <section id="reader" class="wrap inner" hidden>
+        <div class="reader-bar">
+          <a href="#library">← Library</a
+          ><label
+            >Contents
+            <select id="contents"></select
+          ></label>
+        </div>
+        <article>
+          <div id="book-name"></div>
+          <h1 id="section-name"></h1>
+          <div id="passage" tabindex="-1"></div>
+          <div class="page-nav">
+            <button id="prev">← Previous</button
+            ><button id="next">Next →</button>
+          </div>
+        </article>
+      </section>
+      <p class="wrap error" id="error" role="alert" hidden></p>
+    </main>
+    <footer class="wrap">
+      <span>Diorama</span><span>Personal library</span>
+    </footer>
+  </body>
+</html>
